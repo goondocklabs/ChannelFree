@@ -218,7 +218,13 @@ public class QuasiTvController : ControllerBase
             return NotFound();
         }
 
-        switch (action.ToLowerInvariant())
+        var act = action.ToLowerInvariant();
+        if ((act == "restart" && !Config.AllowRestart) || (act == "skip" && !Config.AllowJumpAhead))
+        {
+            return StatusCode(403, act + " is turned off in Channel Free settings");
+        }
+
+        switch (act)
         {
             case "restart":
                 JumpManager.Clear(channel.Id);

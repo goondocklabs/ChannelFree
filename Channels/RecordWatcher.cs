@@ -166,6 +166,19 @@ public sealed class RecordWatcher : IHostedService, IDisposable
                 continue;
             }
 
+            var config = Plugin.Instance!.Configuration;
+            if (slot.StartUtc <= now && !config.AllowRestart)
+            {
+                _logger.LogInformation("QuasiTV: Record on {Title} ignored (restart is turned off)", slot.Item.Name);
+                continue;
+            }
+
+            if (slot.StartUtc > now && !config.AllowJumpAhead)
+            {
+                _logger.LogInformation("QuasiTV: Record on later program {Title} ignored (jumping ahead is turned off)", slot.Item.Name);
+                continue;
+            }
+
             if (slot.StartUtc <= now)
             {
                 // Record on what's on now -> restart it.

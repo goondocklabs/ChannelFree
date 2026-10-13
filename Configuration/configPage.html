@@ -210,13 +210,15 @@
                         <pre id="QuasiM3u" class="cf-url"></pre>
                         <p>Dashboard → Live TV → <b>TV Guide Data Providers</b> → + → XMLTV → paste:</p>
                         <pre id="QuasiXml" class="cf-url"></pre>
-                        <p><b>Remote tricks:</b> in the guide, press <b>Record</b> on what's on now to restart it, or on a later program to jump to it.
+                        <p><b>Remote tricks</b> (each can be turned off below): in the guide, press <b>Record</b> on what's on now to restart it, or on a later program to jump to it.
                             Back out within the revert window (and stay away 20 s+) and the channel goes back to what was on before.</p>
                         <p><b>Tags:</b> <code>cable:&lt;channel key&gt;</code> adds a title, <code>cable:exclude</code> keeps it off every channel (old <code>quasi:</code> tags still work).</p>
 
                         <form id="QuasiTvConfigForm">
                             <h3>Playback</h3>
                             <div class="inputContainer"><input is="emby-input" type="text" id="InternalUrl" label="Internal Jellyfin URL (how Jellyfin reaches itself)" /></div>
+                            <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="AllowJumpAhead" /><span>Allow jumping ahead: Record on a later program starts it now (off = real cable, only what's on now)</span></label></div>
+                            <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="AllowRestart" /><span>Allow restarting: Record on what's on now starts it over from the beginning</span></label></div>
                             <div class="inputContainer"><input is="emby-input" type="number" id="RevertWindowMinutes" min="0" max="240" label="Revert window after a jump (minutes)" /></div>
                             <div class="inputContainer"><input is="emby-input" type="number" id="VideoBitrateKbps" min="500" max="20000" label="Channel video bitrate (kbps)" /></div>
                             <div class="inputContainer"><input is="emby-input" type="text" id="PreferredAudioLanguages" label="Preferred audio languages (e.g. eng,en — used when a file has several audio tracks)" /></div>
@@ -1069,6 +1071,8 @@
                         $('#InternalUrl').value = config.InternalUrl;
                         $('#VideoBitrateKbps').value = config.VideoBitrateKbps;
                         $('#RevertWindowMinutes').value = config.RevertWindowMinutes;
+                        $('#AllowJumpAhead').checked = !!config.AllowJumpAhead;
+                        $('#AllowRestart').checked = config.AllowRestart !== false;
                         $('#MinGenreTitles').value = config.MinGenreTitles;
                         $('#MinNetworkShows').value = config.MinNetworkShows;
                         $('#ShowBanner').checked = config.ShowBanner;
@@ -1098,6 +1102,8 @@
                         config.VideoBitrateKbps = parseInt($('#VideoBitrateKbps').value, 10) || 4000;
                         var rw = parseInt($('#RevertWindowMinutes').value, 10);
                         config.RevertWindowMinutes = isNaN(rw) ? 10 : rw;
+                        config.AllowJumpAhead = $('#AllowJumpAhead').checked;
+                        config.AllowRestart = $('#AllowRestart').checked;
                         config.MinGenreTitles = parseInt($('#MinGenreTitles').value, 10) || 15;
                         config.MinNetworkShows = parseInt($('#MinNetworkShows').value, 10) || 4;
                         config.ShowBanner = $('#ShowBanner').checked;

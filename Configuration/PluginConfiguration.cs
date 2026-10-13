@@ -25,6 +25,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>After a Record-jump, leaving the channel within this many minutes reverts it.</summary>
     public int RevertWindowMinutes { get; set; } = 10;
 
+    /// <summary>Record on a later program in the guide moves it to now. Off = real cable: only what's on now can be watched.</summary>
+    public bool AllowJumpAhead { get; set; } = false;
+
+    /// <summary>Record on the program that's on now restarts it from the beginning.</summary>
+    public bool AllowRestart { get; set; } = true;
+
     /// <summary>Per-channel schedule shifts created by Restart / Skip.</summary>
     public List<ChannelShift> Shifts { get; set; } = new();
 
