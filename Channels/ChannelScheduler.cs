@@ -91,7 +91,7 @@ public static class ChannelScheduler
                 }
 
                 _channels = ChannelRules.AllDefs(_index, Config)
-                    .Where(def => ChannelRules.IsEnabled(def, Config))
+                    .Where(def => ChannelRules.OnAir(def, Config))
                     .Select(def =>
                     {
                         var o = ChannelRules.Override(Config, def.Key);

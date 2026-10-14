@@ -147,6 +147,20 @@ public class QuasiTvAdminController : ControllerBase
 
         /// <summary>Episodes in a row (1–6).</summary>
         public int? EpisodesInARow { get; set; }
+
+        /// <summary>Era start year; 0 clears it.</summary>
+        public int? YearFrom { get; set; }
+
+        /// <summary>Era end year; 0 clears it.</summary>
+        public int? YearTo { get; set; }
+
+        /// <summary>"movies", "shows", "all", or "off".</summary>
+        public string? EraAdd { get; set; }
+
+        /// <summary>"MM-DD"; empty clears the season.</summary>
+        public string? SeasonStart { get; set; }
+
+        public string? SeasonEnd { get; set; }
     }
 
     public sealed class ShowBlockRequest
@@ -198,6 +212,7 @@ public class QuasiTvAdminController : ControllerBase
                     number = d.Number,
                     kind = d.Kind.ToString(),
                     enabled = ChannelRules.IsEnabled(d, Config),
+                    inSeason = ChannelRules.InSeason(ChannelRules.Override(Config, d.Key), DateTime.Now),
                     count = pool.Count,
                     now = cur is null ? null : Title(cur.Item),
                     nowEndsUtc = cur?.EndUtc
@@ -294,6 +309,12 @@ public class QuasiTvAdminController : ControllerBase
             number = def.Number,
             kind = def.Kind.ToString(),
             enabled = ChannelRules.IsEnabled(def, Config),
+            inSeason = ChannelRules.InSeason(o, DateTime.Now),
+            yearFrom = o?.YearFrom,
+            yearTo = o?.YearTo,
+            eraAdd = o?.EraAdd ?? "off",
+            seasonStart = o?.SeasonStart,
+            seasonEnd = o?.SeasonEnd,
             order = ChannelRules.InOrder(def, Config) ? "inorder" : "shuffle",
             inARow = o?.EpisodesInARow ?? 1,
             weighted = o?.Weighted ?? false,
@@ -389,6 +410,37 @@ public class QuasiTvAdminController : ControllerBase
         if (req.Order is not null)
         {
             o.Order = string.Equals(req.Order, "inorder", StringComparison.OrdinalIgnoreCase) ? "inorder" : "shuffle";
+        }
+
+        if (req.YearFrom.HasValue)
+        {
+            o.YearFrom = req.YearFrom.Value is > 0 and < 10000 ? req.YearFrom : null;
+        }
+
+        if (req.YearTo.HasValue)
+        {
+            o.YearTo = req.YearTo.Value is > 0 and < 10000 ? req.YearTo : null;
+        }
+
+        if (o.YearFrom.HasValue && o.YearTo.HasValue && o.YearFrom > o.YearTo)
+        {
+            (o.YearFrom, o.YearTo) = (o.YearTo, o.YearFrom);
+        }
+
+        if (req.EraAdd is not null)
+        {
+            var scope = req.EraAdd.Trim().ToLowerInvariant();
+            o.EraAdd = scope is "movies" or "shows" or "all" ? scope : null;
+        }
+
+        if (req.SeasonStart is not null)
+        {
+            o.SeasonStart = ChannelRules.ParseMonthDay(req.SeasonStart) is int ss ? $"{ss / 100:00}-{ss % 100:00}" : null;
+        }
+
+        if (req.SeasonEnd is not null)
+        {
+            o.SeasonEnd = ChannelRules.ParseMonthDay(req.SeasonEnd) is int se ? $"{se / 100:00}-{se % 100:00}" : null;
         }
 
         return Changed(key);

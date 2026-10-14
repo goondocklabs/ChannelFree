@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Jellyfin.Plugin.QuasiTV.Configuration;
 using MediaBrowser.Controller.Entities;
@@ -196,6 +197,72 @@ public static class ChannelRules
     public static bool IsEnabled(ChannelDef def, PluginConfiguration cfg)
         => Override(cfg, def.Key)?.Enabled ?? def.Kind is ChannelKind.Core or ChannelKind.Custom;
 
+    /// <summary>Switched on and in season: actually on the guide right now.</summary>
+    public static bool OnAir(ChannelDef def, PluginConfiguration cfg)
+        => IsEnabled(def, cfg) && InSeason(Override(cfg, def.Key), DateTime.Now);
+
+    /// <summary>True when there's no season set, or <paramref name="when"/> falls inside it (wraps past New Year, e.g. 12-01 to 01-05).</summary>
+    public static bool InSeason(ChannelOverride? o, DateTime when)
+    {
+        var start = ParseMonthDay(o?.SeasonStart);
+        var end = ParseMonthDay(o?.SeasonEnd);
+        if (start is null || end is null)
+        {
+            return true;
+        }
+
+        var today = (when.Month * 100) + when.Day;
+        return start <= end ? today >= start && today <= end : today >= start || today <= end;
+    }
+
+    /// <summary>"10-31" or "10/31" -> 1031; anything invalid -> null.</summary>
+    public static int? ParseMonthDay(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+        {
+            return null;
+        }
+
+        var parts = s.Trim().Split('-', '/');
+        if (parts.Length != 2
+            || !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var m)
+            || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var d)
+            || m < 1 || m > 12 || d < 1 || d > DateTime.DaysInMonth(2024, m))
+        {
+            return null;
+        }
+
+        return (m * 100) + d;
+    }
+
+    /// <summary>First and last year a title was on: a movie's release year, or a show's whole run.</summary>
+    private static (int First, int Last)? YearSpan(BaseItem item, LibraryIndex idx)
+    {
+        if (item is Series s)
+        {
+            var years = idx.EpisodesBySeries.TryGetValue(s.Id, out var eps)
+                ? eps.Select(e => e.PremiereDate?.Year ?? e.ProductionYear ?? 0).Where(y => y > 0).ToList()
+                : new List<int>();
+            if (s.ProductionYear is int py && py > 0)
+            {
+                years.Add(py);
+            }
+
+            if (s.EndDate is DateTime ed)
+            {
+                years.Add(ed.Year);
+            }
+
+            return years.Count == 0 ? null : (years.Min(), years.Max());
+        }
+
+        var y = item.ProductionYear ?? item.PremiereDate?.Year ?? 0;
+        return y > 0 ? (y, y) : null;
+    }
+
+    private static bool InEra((int First, int Last)? span, int from, int to)
+        => span.HasValue && span.Value.First <= to && span.Value.Last >= from;
+
     public static bool InOrder(ChannelDef def, PluginConfiguration cfg)
         => string.Equals(Override(cfg, def.Key)?.Order, "inorder", StringComparison.OrdinalIgnoreCase);
 
@@ -270,6 +337,41 @@ public static class ChannelRules
                     ? (idx.SeriesById.TryGetValue(u.Id, out var sh) ? sh : null)
                     : (idx.Playable.TryGetValue(u.Id, out var pl) ? pl : null);
                 if (item is not null && (HasAny(item.Genres, excludeGenres) || HasAny(item.Tags, excludeTags) || HasAny(item.Studios, excludeStudios)))
+                {
+                    units.Remove(u.Id);
+                }
+            }
+        }
+
+        // Era: bring in everything from the years, then keep only titles from the years.
+        if (o is not null && (o.YearFrom.HasValue || o.YearTo.HasValue))
+        {
+            var from = o.YearFrom ?? 1;
+            var to = o.YearTo ?? 9999;
+            var label = from == to ? $"Era: {from}" : $"Era: {(o.YearFrom?.ToString(CultureInfo.InvariantCulture) ?? "…")}–{(o.YearTo?.ToString(CultureInfo.InvariantCulture) ?? "…")}";
+            var addScope = o.EraAdd?.ToLowerInvariant();
+            if (addScope is "movies" or "all")
+            {
+                foreach (var m in idx.Movies.Where(m => InEra(YearSpan(m, idx), from, to)))
+                {
+                    units.TryAdd(m.Id, new Unit(m.Id, false, label));
+                }
+            }
+
+            if (addScope is "shows" or "all")
+            {
+                foreach (var sh in idx.Series.Where(s => InEra(YearSpan(s, idx), from, to)))
+                {
+                    units.TryAdd(sh.Id, new Unit(sh.Id, true, label));
+                }
+            }
+
+            foreach (var u in units.Values.ToList())
+            {
+                BaseItem? item = u.IsSeries
+                    ? (idx.SeriesById.TryGetValue(u.Id, out var sh) ? sh : null)
+                    : (idx.Playable.TryGetValue(u.Id, out var pl) ? pl : null);
+                if (item is not null && !InEra(YearSpan(item, idx), from, to))
                 {
                     units.Remove(u.Id);
                 }

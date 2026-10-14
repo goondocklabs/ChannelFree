@@ -143,6 +143,21 @@ public class ChannelOverride
 
     /// <summary>Studios / networks kept off this channel.</summary>
     public List<string> ExcludeStudios { get; set; } = new();
+
+    // ---- eras and seasons (goondocklabs fork)
+
+    /// <summary>Era: only keep titles released in this range (a show counts if any part of its run falls inside). Titles you add one by one always stay.</summary>
+    public int? YearFrom { get; set; }
+
+    public int? YearTo { get; set; }
+
+    /// <summary>Also bring in everything from the era: "movies", "shows" or "all". Null = only filter what the channel already has.</summary>
+    public string? EraAdd { get; set; }
+
+    /// <summary>Season: the channel is only on the guide between these dates each year, as "MM-DD" (may wrap past New Year). Null = all year.</summary>
+    public string? SeasonStart { get; set; }
+
+    public string? SeasonEnd { get; set; }
 }
 
 /// <summary>How many episodes of one show to play in a row on a channel.</summary>

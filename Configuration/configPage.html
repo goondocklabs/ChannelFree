@@ -288,6 +288,29 @@
                         <button class="cf-btn primary" id="CfAddToggle" type="button">+ Add to channel</button>
                     </div>
 
+                    <!-- eras and seasons (goondocklabs fork) -->
+                    <div class="cf-bar" id="CfEraSeason">
+                        <label title="Only keep titles from these years. A show counts if any part of its run falls inside. Titles you add one by one always stay.">Years
+                            <input id="CfYearFrom" class="cf-in" type="number" min="1900" max="2100" placeholder="from" style="width:6.5em;" />
+                            to
+                            <input id="CfYearTo" class="cf-in" type="number" min="1900" max="2100" placeholder="to" style="width:6.5em;" />
+                        </label>
+                        <label title="Also bring in everything in your library from these years">Add everything from those years
+                            <select id="CfEraAdd" class="cf-sel">
+                                <option value="off">No, just filter</option><option value="movies">Movies</option><option value="shows">Shows</option><option value="all">Movies and shows</option>
+                            </select>
+                        </label>
+                        <label title="Only on the guide between these dates each year (can wrap past New Year). Leave blank for all year.">Season
+                            <select id="CfSeasonStartM" class="cf-sel"><option value="">Month</option><option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option><option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option><option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option><option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option></select>
+                            <input id="CfSeasonStartD" class="cf-in" type="number" min="1" max="31" placeholder="day" style="width:4.5em;" />
+                            to
+                            <select id="CfSeasonEndM" class="cf-sel"><option value="">Month</option><option value="01">Jan</option><option value="02">Feb</option><option value="03">Mar</option><option value="04">Apr</option><option value="05">May</option><option value="06">Jun</option><option value="07">Jul</option><option value="08">Aug</option><option value="09">Sep</option><option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option></select>
+                            <input id="CfSeasonEndD" class="cf-in" type="number" min="1" max="31" placeholder="day" style="width:4.5em;" />
+                        </label>
+                        <button class="cf-btn" id="CfSeasonClear" type="button" title="On the guide all year">All year</button>
+                        <span class="cf-hint" id="CfSeasonNote"></span>
+                    </div>
+
                     <!-- one search: titles, genres, networks, tags -->
                     <div id="CfAddPanel" class="cf-panel" style="display:none;">
                         <div class="cf-bar" style="margin-bottom:12px;">
@@ -392,7 +415,7 @@
                     { title: 'Network channels', kinds: ['Network'] }
                 ];
                 function row(c) {
-                    var sub = c.count + ' titles' + (c.now && c.enabled ? ' · ' + nowLine(c) : '');
+                    var sub = c.count + ' titles' + (c.enabled && c.inSeason === false ? ' · out of season' : '') + (c.now && c.enabled ? ' · ' + nowLine(c) : '');
                     return '<div class="cf-row' + (c.enabled ? '' : ' off') + '" data-key="' + esc(c.key) + '">' +
                         '<span class="cf-num cf-acc">' + c.number + '</span>' +
                         '<div class="cf-main"><div class="cf-name">' + esc(c.name) + '</div><div class="cf-sub">' + sub + '</div></div>' +
@@ -629,6 +652,12 @@
                         $('#QuasiDetailName').value = d.name;
                         $('#QuasiDetailEnabled').checked = d.enabled;
                         $('#QuasiDetailInARow').value = String(d.inARow || 1);
+                        $('#CfYearFrom').value = d.yearFrom || '';
+                        $('#CfYearTo').value = d.yearTo || '';
+                        $('#CfEraAdd').value = d.eraAdd || 'off';
+                        setMonthDay('Start', d.seasonStart);
+                        setMonthDay('End', d.seasonEnd);
+                        seasonNote(d);
                         inOrder = d.order === 'inorder';
                         weighted = !!d.weighted;
                         ranking = (d.ranking || []).slice();
@@ -719,6 +748,39 @@
                 $('#QuasiDetailInARow').addEventListener('change', function () {
                     saveSettings({ EpisodesInARow: parseInt(this.value, 10) || 1 }, this.value + ' in a row');
                 });
+                // ---- eras and seasons
+                function setMonthDay(which, v) {
+                    var p = (v || '').split('-');
+                    $('#CfSeason' + which + 'M').value = p.length === 2 ? p[0] : '';
+                    $('#CfSeason' + which + 'D').value = p.length === 2 ? String(parseInt(p[1], 10)) : '';
+                }
+                function readMonthDay(which) {
+                    var m = $('#CfSeason' + which + 'M').value, d = parseInt($('#CfSeason' + which + 'D').value, 10);
+                    return m && d ? m + '-' + (d < 10 ? '0' : '') + d : null;
+                }
+                function seasonNote(d) {
+                    var txt = '';
+                    if (d.seasonStart && d.seasonEnd) {
+                        txt = d.inSeason ? 'In season now' : 'Out of season: off the guide until ' + d.seasonStart.replace('-', '/');
+                    }
+                    $('#CfSeasonNote').textContent = txt;
+                }
+                function saveEra() {
+                    var f = parseInt($('#CfYearFrom').value, 10) || 0, t = parseInt($('#CfYearTo').value, 10) || 0;
+                    saveSettings({ YearFrom: f, YearTo: t, EraAdd: $('#CfEraAdd').value }, f || t ? 'Era saved, guide updates shortly' : 'Era cleared').then(function () { loadDetail(current, true); });
+                }
+                ['#CfYearFrom', '#CfYearTo', '#CfEraAdd'].forEach(function (s) { $(s).addEventListener('change', saveEra); });
+                function saveSeason() {
+                    var a = readMonthDay('Start'), b = readMonthDay('End');
+                    if ((a && !b) || (!a && b)) { return; } // wait until both dates are filled in
+                    saveSettings({ SeasonStart: a || '', SeasonEnd: b || '' }, a ? 'Season saved' : 'On all year').then(function () { loadDetail(current, true); loadList && loadList(); });
+                }
+                ['#CfSeasonStartM', '#CfSeasonStartD', '#CfSeasonEndM', '#CfSeasonEndD'].forEach(function (s) { $(s).addEventListener('change', saveSeason); });
+                $('#CfSeasonClear').addEventListener('click', function () {
+                    setMonthDay('Start', ''); setMonthDay('End', '');
+                    saveSeason();
+                });
+
                 $('#QuasiDetailEnabled').addEventListener('change', function () {
                     if (lastDetail) { lastDetail.enabled = this.checked; detailSub(lastDetail); }
                     saveSettings({ Enabled: this.checked }, this.checked ? 'On the air — guide updates shortly' : 'Off the air');
