@@ -91,6 +91,14 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Web + LG: first Down press on a channel shows a mini info banner; the next press opens the normal controls.</summary>
     public bool DownArrowBanner { get; set; } = true;
+
+    // ---- music videos (goondocklabs fork)
+
+    /// <summary>MTV-style artist / song / year caption in the lower left near the start and end of each music video.</summary>
+    public bool MusicVideoCaptions { get; set; } = true;
+
+    /// <summary>A music video won't air again on the same channel within this many hours (when the channel has enough to pick from).</summary>
+    public int MusicVideoNoRepeatHours { get; set; } = 6;
 }
 
 /// <summary>Editor overrides for one channel (by key).</summary>

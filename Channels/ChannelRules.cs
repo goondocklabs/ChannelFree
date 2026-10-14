@@ -201,6 +201,28 @@ public static class ChannelRules
     public static bool OnAir(ChannelDef def, PluginConfiguration cfg)
         => IsEnabled(def, cfg) && InSeason(Override(cfg, def.Key), DateTime.Now);
 
+    /// <summary>A music video's artist(s), "" if unknown.</summary>
+    public static string Artist(BaseItem item)
+    {
+        if (item is MusicVideo mv)
+        {
+            var names = ((IEnumerable<string>?)mv.Artists ?? Array.Empty<string>()).Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
+            if (names.Count > 0)
+            {
+                return string.Join(" & ", names);
+            }
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>"Artist - Song" for music videos, the plain name otherwise.</summary>
+    public static string DisplayName(BaseItem item)
+    {
+        var artist = Artist(item);
+        return artist.Length > 0 ? $"{artist} - {item.Name}" : item.Name ?? "Untitled";
+    }
+
     /// <summary>True when there's no season set, or <paramref name="when"/> falls inside it (wraps past New Year, e.g. 12-01 to 01-05).</summary>
     public static bool InSeason(ChannelOverride? o, DateTime when)
     {
@@ -293,6 +315,11 @@ public static class ChannelRules
             units[m.Id] = new Unit(m.Id, false, "Tagged " + addTag);
         }
 
+        foreach (var v in idx.MusicVideos.Where(v => Has(v.Tags, addTag) || Has(v.Tags, oldTag)))
+        {
+            units[v.Id] = new Unit(v.Id, false, "Tagged " + addTag);
+        }
+
         foreach (var e in idx.EpisodesBySeries.Values.SelectMany(x => x).Where(e => Has(e.Tags, addTag) || Has(e.Tags, oldTag)))
         {
             units[e.Id] = new Unit(e.Id, false, "Tagged " + addTag);
@@ -304,6 +331,16 @@ public static class ChannelRules
             foreach (var entry in entries)
             {
                 var (scope, name) = SplitGenre(entry);
+                if (scope == "musicvideos")
+                {
+                    foreach (var v in idx.MusicVideos.Where(v => Has(field(v), name)))
+                    {
+                        units.TryAdd(v.Id, new Unit(v.Id, false, label + name));
+                    }
+
+                    continue;
+                }
+
                 if (scope != "shows")
                 {
                     foreach (var m in idx.Movies.Where(m => Has(field(m), name)))
@@ -366,6 +403,14 @@ public static class ChannelRules
                 }
             }
 
+            if (addScope is "musicvideos")
+            {
+                foreach (var v in idx.MusicVideos.Where(v => InEra(YearSpan(v, idx), from, to)))
+                {
+                    units.TryAdd(v.Id, new Unit(v.Id, false, label));
+                }
+            }
+
             foreach (var u in units.Values.ToList())
             {
                 BaseItem? item = u.IsSeries
@@ -408,7 +453,7 @@ public static class ChannelRules
         if (i > 0)
         {
             var scope = entry[..i].ToLowerInvariant();
-            if (scope is "movies" or "shows" or "all")
+            if (scope is "movies" or "shows" or "all" or "musicvideos")
             {
                 return (scope, entry[(i + 1)..]);
             }

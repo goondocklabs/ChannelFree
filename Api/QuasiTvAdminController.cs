@@ -233,11 +233,12 @@ public class QuasiTvAdminController : ControllerBase
 
         var movies = idx.Movies.SelectMany(m => field(m) ?? Array.Empty<string>()).GroupBy(g => g, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
         var shows = idx.Series.SelectMany(x => field(x) ?? Array.Empty<string>()).GroupBy(g => g, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
-        var list = movies.Keys.Union(shows.Keys, StringComparer.OrdinalIgnoreCase)
+        var videos = idx.MusicVideos.SelectMany(x => field(x) ?? Array.Empty<string>()).GroupBy(g => g, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+        var list = movies.Keys.Union(shows.Keys, StringComparer.OrdinalIgnoreCase).Union(videos.Keys, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Any(char.IsLetterOrDigit))
             .Where(g => !g.StartsWith("quasi:", StringComparison.OrdinalIgnoreCase) && !g.StartsWith("cable:", StringComparison.OrdinalIgnoreCase))
-            .Select(g => new { name = g, movies = movies.GetValueOrDefault(g), shows = shows.GetValueOrDefault(g) })
-            .Where(g => !tags || g.movies + g.shows >= 2) // keywords: skip one-offs
+            .Select(g => new { name = g, movies = movies.GetValueOrDefault(g), shows = shows.GetValueOrDefault(g), musicVideos = videos.GetValueOrDefault(g) })
+            .Where(g => !tags || g.movies + g.shows + g.musicVideos >= 2) // keywords: skip one-offs
             .OrderBy(g => g.name, StringComparer.OrdinalIgnoreCase);
         return Ok(list);
     }
@@ -262,7 +263,7 @@ public class QuasiTvAdminController : ControllerBase
         switch (req.Mode.ToLowerInvariant())
         {
             case "include":
-                var scope = req.Scope.ToLowerInvariant() is "movies" or "shows" ? req.Scope.ToLowerInvariant() : "all";
+                var scope = req.Scope.ToLowerInvariant() is "movies" or "shows" or "musicvideos" ? req.Scope.ToLowerInvariant() : "all";
                 include.Add(scope + ":" + g);
                 break;
             case "exclude":
@@ -430,7 +431,7 @@ public class QuasiTvAdminController : ControllerBase
         if (req.EraAdd is not null)
         {
             var scope = req.EraAdd.Trim().ToLowerInvariant();
-            o.EraAdd = scope is "movies" or "shows" or "all" ? scope : null;
+            o.EraAdd = scope is "movies" or "shows" or "all" or "musicvideos" ? scope : null;
         }
 
         if (req.SeasonStart is not null)
@@ -625,6 +626,7 @@ public class QuasiTvAdminController : ControllerBase
         {
             Series => "Show",
             Episode => "Episode",
+            MusicVideo => "Music video",
             MediaBrowser.Controller.Entities.Movies.BoxSet => "Collection",
             _ => "Movie"
         };
@@ -633,5 +635,5 @@ public class QuasiTvAdminController : ControllerBase
     }
 
     private static string Title(BaseItem item)
-        => item is Episode ep ? $"{ep.SeriesName} — {ep.Name}" : item.Name ?? "Untitled";
+        => item is Episode ep ? $"{ep.SeriesName} — {ep.Name}" : ChannelRules.DisplayName(item);
 }

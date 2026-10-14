@@ -430,7 +430,9 @@ public static class ChannelScheduler
         var gap = Math.Min(channel.Weights is null ? ShowGap : 1, Math.Max(0, pool.Count - 1));
         var recent = state.Recent.TakeLast(gap).ToHashSet();
 
-        bool MovieOk(Unit u) => u.IsSeries || !state.LastAired.TryGetValue(u.Id.ToString("N"), out var t) || start - t >= MovieNoRepeat;
+        var videoNoRepeat = TimeSpan.FromHours(Math.Clamp(Config.MusicVideoNoRepeatHours, 0, 168));
+        bool MovieOk(Unit u) => u.IsSeries || !state.LastAired.TryGetValue(u.Id.ToString("N"), out var t)
+            || start - t >= (_index!.Playable.TryGetValue(u.Id, out var it) && it is MusicVideo ? videoNoRepeat : MovieNoRepeat);
 
         var eligible = pool.Where(u => !recent.Contains(u.Id) && MovieOk(u)).ToList();
         Unit pick;
@@ -520,8 +522,9 @@ public static class ChannelScheduler
             play = Credits.PlayTicks(item, runtime, out trimmed);
         }
 
-        // Bumper only when a different show / movie comes up (not between episodes of the same show, not on a fresh start).
-        var bumper = Config.ShowBumpers && prevUnit is Guid p && p != unitId
+        // Bumper only when a different show / movie comes up (not between episodes of the same show, not on a fresh start,
+        // and never before a music video: videos run back to back like real music TV).
+        var bumper = Config.ShowBumpers && prevUnit is Guid p && p != unitId && item is not MusicVideo
             ? TimeSpan.FromSeconds(Math.Clamp(Config.BumperSeconds, 2, 15)).Ticks
             : 0;
 

@@ -74,6 +74,7 @@
             #QuasiTvConfigPage .cf-when-line .cf-day { width:4.5em; }
             #QuasiTvConfigPage .cf-seg.cf-wrap { display:grid; grid-template-columns:1fr 1fr; gap:2px; align-self:stretch; width:100%; box-sizing:border-box; }
             #QuasiTvConfigPage .cf-when-card > .cf-seg:not(.cf-wrap) { align-self:flex-start; }
+            #QuasiTvConfigPage .cf-seg .cf-span2 { grid-column:span 2; }
             #QuasiTvConfigPage .cf-when-sum { border-left:3px solid var(--cf-blue); padding:6px 10px; background:rgba(0,164,220,.08); border-radius:0 8px 8px 0; font-size:.92em; }
             #QuasiTvConfigPage .cf-when-sum.warn { border-left-color:var(--cf-amber); background:rgba(255,200,97,.1); }
             #QuasiTvConfigPage .cf-panel { background:var(--cf-card); border-radius:14px; padding:16px 20px; margin:0 0 16px; }
@@ -240,6 +241,10 @@
                             <div class="inputContainer"><input is="emby-input" type="number" id="BannerSeconds" min="1" max="30" label="Banner length (seconds)" /></div>
                             <div class="inputContainer"><input is="emby-input" type="text" id="TimeZoneId" label="Time zone for the banner (e.g. America/New_York — leave empty to use the server's)" /></div>
 
+                            <h3>Music videos</h3>
+                            <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="MusicVideoCaptions" /><span>MTV style caption (artist, song, year) near the start and end of each music video</span></label></div>
+                            <div class="inputContainer"><input is="emby-input" type="number" id="MusicVideoNoRepeatHours" min="0" max="168" label="Don't repeat a music video on the same channel within (hours)" /></div>
+
                             <h3>Credits</h3>
                             <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="TrimCredits" /><span>Cut end credits short when a credits marker exists (Intro Skipper, or a "Credits" chapter)</span></label></div>
                             <div class="inputContainer"><input is="emby-input" type="number" id="CreditsKeepSecondsTv" min="0" max="600" label="TV: seconds of credits to keep" /></div>
@@ -315,6 +320,7 @@
                                 <button type="button" data-val="movies" title="Bring in every movie from those years">Fill with movies</button>
                                 <button type="button" data-val="shows" title="Bring in every show that aired in those years">Fill with shows</button>
                                 <button type="button" data-val="all" title="Bring in every movie and show from those years">Fill with both</button>
+                                <button type="button" data-val="musicvideos" title="Bring in every music video from those years" class="cf-span2">Fill with music videos</button>
                             </div>
                             <div class="cf-when-sum" id="CfEraSummary"></div>
                         </div>
@@ -349,6 +355,7 @@
                                 <option value="all">Movies &amp; shows</option>
                                 <option value="movies">Movies only</option>
                                 <option value="shows">Shows only</option>
+                                <option value="musicvideos">Music videos only</option>
                             </select>
                             <span class="cf-grow"></span>
                             <button class="cf-btn" id="CfAddClose" type="button">Done</button>
@@ -815,7 +822,7 @@
                                 ? 'This channel has nothing of its own yet, so narrowing leaves it empty. Pick one of the <b>Fill</b> options.'
                                 : 'Plays only what this channel already gets that came out ' + yrs + '.', empty);
                         } else {
-                            var what = { movies: 'every movie', shows: 'every show', all: 'every movie and show' }[eraMode];
+                            var what = { movies: 'every movie', shows: 'every show', all: 'every movie and show', musicvideos: 'every music video' }[eraMode];
                             summary('#CfEraSummary', 'Plays ' + what + ' in your library from ' + yrs +
                                 (d.kind === 'Custom' ? '' : ', whatever the genre') + ', plus anything you add by hand.');
                         }
@@ -1053,12 +1060,12 @@
                     var have = {};
                     if (lastDetail) { lastDetail.items.concat(lastDetail.collections).forEach(function (it) { have[it.id] = true; }); }
                     ApiClient.getItems(ApiClient.getCurrentUserId(), {
-                        SearchTerm: q, IncludeItemTypes: 'BoxSet,Movie,Series,Episode', Recursive: true, Limit: 24, Fields: 'ProductionYear'
+                        SearchTerm: q, IncludeItemTypes: 'BoxSet,Movie,Series,Episode,MusicVideo', Recursive: true, Limit: 24, Fields: 'ProductionYear'
                     }).then(function (r) {
                         if (findMode !== 'titles') { return; }
                         $('#QuasiSearchResults').innerHTML = (r.Items || []).map(function (i) {
-                            var name = i.Type === 'Episode' ? (i.SeriesName + ' — ' + i.Name) : i.Name;
-                            var type = i.Type === 'Series' ? 'Show' : i.Type === 'BoxSet' ? 'Collection' : i.Type;
+                            var name = i.Type === 'Episode' ? (i.SeriesName + ' — ' + i.Name) : i.Type === 'MusicVideo' && i.Artists && i.Artists.length ? (i.Artists.join(' & ') + ' - ' + i.Name) : i.Name;
+                            var type = i.Type === 'Series' ? 'Show' : i.Type === 'BoxSet' ? 'Collection' : i.Type === 'MusicVideo' ? 'Music video' : i.Type;
                             return card({ id: i.Id, name: name, type: type, year: i.ProductionYear, onChannel: !!have[i.Id] }, 'search', '');
                         }).join('') || '<p class="cf-hint">No matches.</p>';
                     });
@@ -1088,13 +1095,14 @@
                         var list = (ruleLists[kind] || []).filter(function (g) { return !lq || g.name.toLowerCase().indexOf(lq) >= 0; });
                         list.sort(function (a, b) {
                             var as = lq && a.name.toLowerCase().indexOf(lq) === 0 ? 0 : 1, bs = lq && b.name.toLowerCase().indexOf(lq) === 0 ? 0 : 1;
-                            return as - bs || (b.movies + b.shows) - (a.movies + a.shows);
+                            return as - bs || (b.movies + b.shows + (b.musicVideos || 0)) - (a.movies + a.shows + (a.musicVideos || 0));
                         });
                         var shown = list.slice(0, 40);
                         var html = shown.map(function (g) {
                             var parts = [];
                             if (g.shows) { parts.push(g.shows + (g.shows === 1 ? ' show' : ' shows')); }
                             if (g.movies) { parts.push(g.movies + (g.movies === 1 ? ' movie' : ' movies')); }
+                            if (g.musicVideos) { parts.push(g.musicVideos + (g.musicVideos === 1 ? ' music video' : ' music videos')); }
                             var st = ruleState(kind, g.name);
                             var label = kind === 'tag' ? '#' + esc(g.name) : esc(g.name);
                             var acts = st === 'inc'
@@ -1235,6 +1243,8 @@
                         $('#BumperSeconds').value = config.BumperSeconds;
                         $('#BumperVolumeDb').value = config.BumperVolumeDb;
                         $('#DownArrowBanner').checked = config.DownArrowBanner;
+                        $('#MusicVideoCaptions').checked = config.MusicVideoCaptions !== false;
+                        $('#MusicVideoNoRepeatHours').value = config.MusicVideoNoRepeatHours == null ? 6 : config.MusicVideoNoRepeatHours;
                         showUrls(config);
                         Dashboard.hideLoadingMsg();
                     });
@@ -1268,6 +1278,9 @@
                         config.BumperSeconds = parseInt($('#BumperSeconds').value, 10) || 5;
                         var bv = parseInt($('#BumperVolumeDb').value, 10);
                         config.BumperVolumeDb = isNaN(bv) ? -14 : bv;
+                        config.MusicVideoCaptions = $('#MusicVideoCaptions').checked;
+                        var mvr = parseInt($('#MusicVideoNoRepeatHours').value, 10);
+                        config.MusicVideoNoRepeatHours = isNaN(mvr) ? 6 : mvr;
                         config.DownArrowBanner = $('#DownArrowBanner').checked;
                         ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                             showUrls(config);

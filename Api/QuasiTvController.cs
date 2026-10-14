@@ -109,7 +109,7 @@ public class QuasiTvController : ControllerBase
                     w.WriteAttributeString("start", XmlTvTime(slot.StartUtc));
                     w.WriteAttributeString("stop", XmlTvTime(slot.EndUtc));
                     w.WriteAttributeString("channel", ch.Id);
-                    w.WriteElementString("title", ep is not null ? (ep.SeriesName ?? show?.Name ?? item.Name ?? "Untitled") : (item.Name ?? "Untitled"));
+                    w.WriteElementString("title", ep is not null ? (ep.SeriesName ?? show?.Name ?? item.Name ?? "Untitled") : ChannelRules.DisplayName(item));
                     if (ep is not null && !string.IsNullOrWhiteSpace(ep.Name))
                     {
                         w.WriteElementString("sub-title", ep.Name);
@@ -127,7 +127,7 @@ public class QuasiTvController : ControllerBase
                         w.WriteElementString("date", y.ToString(CultureInfo.InvariantCulture));
                     }
 
-                    w.WriteElementString("category", ep is not null ? "Series" : "Movie");
+                    w.WriteElementString("category", ep is not null ? "Series" : item is MusicVideo ? "Music" : "Movie");
 
                     // Wide artwork for the guide: show art for episodes, movie art for movies.
                     BaseItem artItem = show is not null && WideArt(show) is not null ? show : item;
@@ -288,6 +288,7 @@ public class QuasiTvController : ControllerBase
         var quickExits = 0;
         var useHw = Config.UseHardwareEncoding && System.IO.File.Exists(Config.VaapiDevice);
         var bumperBroken = false;
+        var captionBroken = false;
 
         try
         {
@@ -347,7 +348,19 @@ public class QuasiTvController : ControllerBase
                         }
                         else
                         {
-                            if (showBanner)
+                            if (slot.Item is MusicVideo && Config.MusicVideoCaptions && !captionBroken)
+                            {
+                                showBanner = false; // the caption says what's on
+                                try
+                                {
+                                    banner = Caption.Filter(slot.Item, itemOffset, slot.Play, workDir);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "QuasiTV: music video caption failed; playing without it");
+                                }
+                            }
+                            else if (showBanner)
                             {
                                 showBanner = false;
                                 try
@@ -396,6 +409,7 @@ public class QuasiTvController : ControllerBase
 
                     if (banner.Length > 0)
                     {
+                        captionBroken |= slot.Item is MusicVideo;
                         _logger.LogWarning("QuasiTV: stream with info banner failed on {Title}; retrying without the banner", slot.Item.Name);
                         continue; // showBanner is already false
                     }
