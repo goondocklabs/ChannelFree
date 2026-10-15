@@ -85,8 +85,9 @@ def chapters(ffprobe, video):
 def black_gaps(ffmpeg, video):
     """Black screens, each marked True when the sound also drops out (a real gap, not a dark scene)."""
     print("Scanning for the gaps between videos (a minute or two)...")
+    # d=0.03 also catches one-frame black flashes, which is sometimes the only break between two videos.
     out = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-i", video,
-                          "-vf", "blackdetect=d=0.25:pix_th=0.10", "-af", "silencedetect=n=-40dB:d=0.25",
+                          "-vf", "blackdetect=d=0.03:pix_th=0.10:pic_th=0.90", "-af", "silencedetect=n=-40dB:d=0.25",
                           "-f", "null", "-"], capture_output=True, text=True)
     gaps = []
     for m in re.finditer(r"black_start:([\d.]+) black_end:([\d.]+) black_duration:([\d.]+)", out.stderr):
@@ -94,7 +95,15 @@ def black_gaps(ffmpeg, video):
     starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", out.stderr)]
     ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", out.stderr)]
     silences = list(zip(starts, ends + [float("inf")] * (len(starts) - len(ends))))
-    return mark_quiet(gaps, silences)
+    return with_silence_breaks(mark_quiet(gaps, silences), silences)
+
+
+def with_silence_breaks(gaps, silences, min_len=1.5):
+    """Long silences with no black screen are also possible breaks (videos that cut straight to the next one)."""
+    extra = [(s0, s1, 0.0, True) for s0, s1 in silences
+             if s1 != float("inf") and s1 - s0 >= min_len
+             and not any(g[0] - 1.0 <= s1 and g[1] + 1.0 >= s0 for g in gaps)]
+    return sorted(gaps + extra)
 
 
 def mark_quiet(gaps, silences):

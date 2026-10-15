@@ -81,8 +81,9 @@ def match_key(s):
     """Spelling-proof key: 'Beyoncé' = 'beyonce', 'The Police' = 'Police', '&' = 'and', punctuation ignored."""
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c)).lower()
-    s = s.replace("&", " and ").replace("+", " and ")
+    s = s.replace("&", " and ").replace("+", " and ").replace(",", " and ")
     s = re.sub(r"^\s*the\s+", "", s)
+    s = re.sub(r"\b(and|et|feat|ft|featuring|with|vs)\b\.?", " ", s)  # joiners between artists
     return re.sub(r"[^a-z0-9]", "", s)
 
 
@@ -220,19 +221,28 @@ def lookup(artist, title):
                 continue
             d = rec.get("first-release-date") or ""
             if re.match(r"^(19|20)\d\d", d):
-                hits.append((int(d[:4]), int(rec.get("score", 0)), credit))
+                hits.append((int(d[:4]), int(rec.get("score", 0)), credit, rec.get("title", "")))
         if hits:
             year = min(h[0] for h in hits)
             best_credit = max(hits, key=lambda h: h[1])[2]
             sim = _similar(best_credit, artist)
             best_credit = best_credit.replace("\u2019", "'").replace("\u2018", "'")
             fix = best_credit if best_credit and 0.8 <= sim < 1.0 and match_key(best_credit) != match_key(artist) else None
-            return str(year), fix
-    return None, None
+            best_title = max(hits, key=lambda h: h[1])[3].replace("\u2019", "'").replace("\u2018", "'")
+            tsim = _similar(_plain_title(best_title), plain)
+            tfix = (title.replace(plain, _plain_title(best_title)) if best_title and 0.85 <= tsim < 1.0
+                    and match_key(_plain_title(best_title)) != match_key(plain) else None)
+            return str(year), fix, tfix
+    return None, None, None
 
 
 def lookup_year(artist, title):
     return lookup(artist, title)[0]
+
+
+def fix_title_only(artist, title):
+    """Spelling check for titles that already have a year (typos in a downloaded track list)."""
+    return lookup(artist, title)[2]
 
 
 def write_nfo(path, info):
@@ -351,13 +361,16 @@ def main():
         infos[name] = info
         if info and not info["year"] and LOOKUP_MISSING_YEARS and not args.no_lookup:
             print("Looking up the year for " + name)
-            year, fix = lookup(info["artist"], info["title"])
+            year, fix, tfix = lookup(info["artist"], info["title"])
             if year:
                 info["year"] = year
                 looked_up.append("{} - {} ({})".format(info["artist"], info["title"], year))
             if fix:
                 fixed.append("{} -> {}".format(info["artist"], fix))
                 info["artist"] = fix
+            if tfix:
+                fixed.append("{} -> {}".format(info["title"], tfix))
+                info["title"] = tfix
     known = sorted(int(v["year"]) for v in infos.values() if v and v["year"])
     if len(known) >= 3 and known[-1] - known[0] <= 12:
         typical = str(known[len(known) // 2])
@@ -448,7 +461,7 @@ def main():
         for m in sorted(set(merged)):
             print("  " + m)
     if fixed:
-        print("Artist names corrected to the MusicBrainz spelling:")
+        print("Names corrected to the MusicBrainz spelling:")
         for f in fixed:
             print("  " + f)
     if guessed:
