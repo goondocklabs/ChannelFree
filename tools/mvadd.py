@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 from xml.sax.saxutils import escape
@@ -68,6 +69,73 @@ def safe(name):
     """Make a string safe for a file or folder name on the NAS and on Macs."""
     name = re.sub(r'[\\/:*?"<>|]', "", name).strip().strip(".")
     return re.sub(r"\s+", " ", name) or "Unknown"
+
+
+JUNK_RE = re.compile(r"\s*[\(\[][^\)\]]*\b(official|music video|video|remaster(ed)?|hd|hq|4k|lyrics?|explicit|clean|audio)\b[^\)\]]*[\)\]]",
+                     re.IGNORECASE)
+
+
+def match_key(s):
+    """Spelling-proof key: 'Beyoncé' = 'beyonce', 'The Police' = 'Police', '&' = 'and', punctuation ignored."""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    s = s.replace("&", " and ").replace("+", " and ")
+    s = re.sub(r"^\s*the\s+", "", s)
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def song_key(title):
+    """Same song even with '(Official Video)', '[HD]', 'Remastered' and so on tacked on."""
+    return match_key(JUNK_RE.sub("", title))
+
+
+class Library:
+    """What's already on the NAS, so new videos join existing artist folders and duplicates are caught."""
+
+    def __init__(self, root):
+        self.root = root
+        self.artists = {}  # match key -> (folder name, artist spelling used in its tags)
+        if os.path.isdir(root):
+            for folder in sorted(os.listdir(root)):
+                path = os.path.join(root, folder)
+                if os.path.isdir(path) and not folder.startswith((".", "_", "#")):
+                    self.artists.setdefault(match_key(folder), (folder, self._tag_spelling(path) or folder))
+
+    @staticmethod
+    def _tag_spelling(folder):
+        for f in sorted(os.listdir(folder)):
+            if f.endswith(".nfo"):
+                try:
+                    m = re.search(r"<artist>(.*?)</artist>", open(os.path.join(folder, f), encoding="utf-8").read())
+                except OSError:
+                    m = None
+                if m:
+                    return m.group(1).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        return None
+
+    def artist(self, name):
+        """(folder, artist spelling) to use. Reuses an existing folder when the name matches one."""
+        key = match_key(name)
+        if key in self.artists:
+            return self.artists[key]
+        entry = (safe(name), name)
+        self.artists[key] = entry
+        return entry
+
+    def has_song(self, folder, title):
+        """Existing file in the artist folder that's the same song, or None."""
+        path = os.path.join(self.root, folder)
+        if not os.path.isdir(path):
+            return None
+        want = song_key(title)
+        for f in os.listdir(path):
+            stem, ext = os.path.splitext(f)
+            if ext.lower() not in VIDEO_EXTS or f.startswith("."):
+                continue
+            info = parse(stem)
+            if info and song_key(info["title"]) == want:
+                return f
+        return None
 
 
 def parse(stem):
@@ -212,7 +280,8 @@ def main():
         print("The Inbox is empty. Drop videos into:\n  " + args.inbox)
         return
 
-    added, attention, looked_up = [], [], []
+    library = Library(args.library)
+    added, attention, looked_up, merged = [], [], [], []
     for i, name in enumerate(files, 1):
         src = os.path.join(args.inbox, name)
         stem = os.path.splitext(name)[0]
@@ -239,11 +308,17 @@ def main():
                 move_aside(src, args.inbox, ATTENTION, reason)
             continue
 
-        artist_dir = os.path.join(args.library, safe(info["artist"]))
+        folder, spelling = library.artist(info["artist"])
+        if spelling != info["artist"]:
+            print("    using the existing artist folder '{}'".format(folder))
+            merged.append("{} -> {}".format(info["artist"], spelling))
+            info["artist"] = spelling  # same spelling in the tags, so Jellyfin shows one artist
+        artist_dir = os.path.join(args.library, folder)
         out_stem = safe("{} - {} ({})".format(info["artist"], info["title"], info["year"]))
         dst = os.path.join(artist_dir, out_stem + ".mp4")
-        if os.path.exists(dst):
-            reason = "already in the library as " + os.path.relpath(dst, args.library)
+        existing = library.has_song(folder, info["title"])
+        if existing or os.path.exists(dst):
+            reason = "already in the library as " + os.path.join(folder, existing or os.path.basename(dst))
             print("    skipped: " + reason)
             attention.append((name, reason))
             if not args.dry_run:
@@ -289,6 +364,10 @@ def main():
 
     print("\n---- Summary ----")
     print("Added: {}".format(len(added)))
+    if merged:
+        print("Matched to artists you already have:")
+        for m in sorted(set(merged)):
+            print("  " + m)
     if looked_up:
         print("Years looked up online (worth a glance):")
         for s in looked_up:
