@@ -48,7 +48,9 @@ def clean_track(line):
     if not m:
         return None
     name = m.group("name").strip().strip('"')
-    name = re.sub(r"\s+[–—]\s+", " - ", name)  # en/em dash separators -> " - "
+    name = name.replace("\u00a0", " ")
+    name = re.sub(r"\s+[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]\s+", " - ", name)  # any dash style -> " - "
+    name = re.sub(r"\s+-{2,}\s+", " - ", name)
     name = name.replace("...", "").replace("…", "")
     name = re.sub(r'[\\/:*?"<>|]', "", name)
     name = re.sub(r"\s+", " ", name).strip(" .")

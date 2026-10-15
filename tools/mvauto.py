@@ -312,6 +312,20 @@ def process(path, ffmpeg, ffprobe, key):
     for i, ((a, b), n) in enumerate(zip(segments, names), 1):
         log("   {:>2}. {:>6} +{:>5}  {}".format(i, mvsplit.fmt(a), mvsplit.fmt(b - a), n or "(not recognized)"))
 
+    # Sanity check before cutting anything: a wrong track count or a missed gap shows up as a song
+    # that's far too short or too long. Hold the file for review rather than put bad cuts on the NAS.
+    odd = [(n, b - a) for (a, b), n in zip(segments, names) if not 90 <= b - a <= 480]
+    if odd:
+        plan = os.path.splitext(path)[0] + " - cuts.txt"
+        with open(plan, "w", encoding="utf-8") as f:
+            f.write("# start seconds | end seconds | name   (fix, save, then run: python3 mvsplit.py VIDEO --cuts THIS_FILE)\n")
+            for (a, b), n in zip(segments, names):
+                f.write("{:.2f}|{:.2f}|{}\n".format(a, b, n or "Unknown"))
+        raise RuntimeError("the cut plan looks wrong ({}); nothing was cut. Plan saved as '{}'. "
+                           "Usually the track list doesn't match the video".format(
+                               ", ".join("{} is {}".format(n or "a song", mvsplit.fmt(d)) for n, d in odd),
+                               os.path.basename(plan)))
+
     known = [(s, n) for s, n in zip(segments, names) if n]
     unknown = [s for s, n in zip(segments, names) if not n]
     mvsplit.cut(ffmpeg, path, [s for s, _ in known], [n for _, n in known], INBOX)
