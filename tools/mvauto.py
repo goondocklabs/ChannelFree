@@ -361,7 +361,16 @@ def main():
                           if not f.startswith((".", "_")) and os.path.splitext(f)[1].lower() in mvadd.VIDEO_EXTS
                           and os.path.isfile(os.path.join(VIDEO_DIR, f)))
             if not todo:
-                if not args.watch:
+                waiting = [f for f in os.listdir(INBOX) if not f.startswith((".", "_"))
+                           and os.path.splitext(f)[1].lower() in mvadd.VIDEO_EXTS]
+                if waiting:
+                    log("== {} video(s) waiting in the Inbox".format(len(waiting)))
+                    cmd = [sys.executable, os.path.join(HERE, "mvadd.py"), "--inbox", INBOX,
+                           "--library", args.library, "--delete-originals"]
+                    if args.no_scan:
+                        cmd.append("--no-scan")
+                    subprocess.run(cmd)
+                elif not args.watch:
                     print("Nothing to do. Drop videos into:\n  " + VIDEO_DIR)
                 return
             failed, waited_out = 0, 0

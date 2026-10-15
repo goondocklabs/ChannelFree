@@ -29,8 +29,10 @@ import re
 import shutil
 import subprocess
 import sys
+import difflib
 import time
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from xml.sax.saxutils import escape
@@ -153,28 +155,84 @@ def parse(stem):
 _last_lookup = [0.0]
 
 
+ARTIST_SPLIT = re.compile(r"\s*(?:,|&|\+|\band\b|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\bx\b|\bvs\.?)\s*", re.IGNORECASE)
+
+
+def _similar(a, b):
+    return difflib.SequenceMatcher(None, match_key(a), match_key(b)).ratio()
+
+
+def _plain_title(t):
+    """Title without bracketed extras: 'Mambo No. 5 (A Little Bit Of) (Ver. 2)' -> 'Mambo No. 5'."""
+    return re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", t).strip() or t
+
+
+def _mb_search(query):
+    url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=25&query=" + urllib.parse.quote(query)
+    for attempt in range(4):
+        wait = 1.1 - (time.time() - _last_lookup[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_lookup[0] = time.time()
+        req = urllib.request.Request(url, headers={"User-Agent": "mvadd/1.1 (personal Jellyfin helper)"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.load(r).get("recordings", [])
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504):
+                return []
+        except Exception:
+            pass
+        time.sleep(2 * (attempt + 1))  # busy: back off and retry
+    return []
+
+
+def lookup(artist, title):
+    """(year, corrected artist spelling or None) from MusicBrainz. Tolerates typos, extra notes in the
+    title and several artists in one name. Polite: about one request per second."""
+    artists = [x for x in ARTIST_SPLIT.split(artist) if len(match_key(x)) >= 2] or [artist]
+    plain = _plain_title(title)
+
+    def terms(text, fuzzy):
+        words = [w for w in re.findall(r"[A-Za-z0-9']+", text) if len(w) >= 3 or w.isdigit()]
+        words = [w.replace("'", "") for w in words]
+        return " OR ".join(("artist:{}~".format(w) if fuzzy else "artist:{}".format(w)) for w in words)
+
+    def clean(t):
+        return t.replace('"', "").replace("\\", "")
+
+    queries = [
+        'recording:"{}" AND artist:"{}"'.format(clean(title), clean(artist)),
+        'recording:"{}" AND ({})'.format(clean(plain), terms(" ".join(artists), True)),
+        'recording:({}) AND ({})'.format(" ".join(re.findall(r"[A-Za-z0-9]+", plain)), terms(" ".join(artists), True)),
+    ]
+    for q in queries:
+        hits = []
+        for rec in _mb_search(q):
+            if int(rec.get("score", 0)) < 60:
+                continue
+            credit = "".join(c.get("name", "") + c.get("joinphrase", "") for c in rec.get("artist-credit", []) or [])
+            if _similar(_plain_title(rec.get("title", "")), plain) < 0.8:
+                continue
+            artist_ok = max([_similar(credit, artist)] + [_similar(c.get("name", ""), x)
+                                                           for c in rec.get("artist-credit", []) or [] for x in artists])
+            if artist_ok < 0.75:
+                continue
+            d = rec.get("first-release-date") or ""
+            if re.match(r"^(19|20)\d\d", d):
+                hits.append((int(d[:4]), int(rec.get("score", 0)), credit))
+        if hits:
+            year = min(h[0] for h in hits)
+            best_credit = max(hits, key=lambda h: h[1])[2]
+            sim = _similar(best_credit, artist)
+            best_credit = best_credit.replace("\u2019", "'").replace("\u2018", "'")
+            fix = best_credit if best_credit and 0.8 <= sim < 1.0 and match_key(best_credit) != match_key(artist) else None
+            return str(year), fix
+    return None, None
+
+
 def lookup_year(artist, title):
-    """Earliest release year of the song on MusicBrainz, or None. Polite: one request per second."""
-    wait = 1.1 - (time.time() - _last_lookup[0])
-    if wait > 0:
-        time.sleep(wait)
-    _last_lookup[0] = time.time()
-    q = 'recording:"{}" AND artist:"{}"'.format(title.replace('"', ""), artist.replace('"', ""))
-    url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=15&query=" + urllib.parse.quote(q)
-    req = urllib.request.Request(url, headers={"User-Agent": "mvadd/1.0 (personal Jellyfin helper)"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.load(r)
-    except Exception:
-        return None
-    years = []
-    for rec in data.get("recordings", []):
-        if int(rec.get("score", 0)) < 90:
-            continue
-        d = rec.get("first-release-date") or ""
-        if re.match(r"^(19|20)\d\d", d):
-            years.append(int(d[:4]))
-    return str(min(years)) if years else None
+    return lookup(artist, title)[0]
 
 
 def write_nfo(path, info):
@@ -285,12 +343,34 @@ def main():
         return
 
     library = Library(args.library)
-    added, attention, looked_up, merged = [], [], [], []
+    added, attention, looked_up, merged, fixed = [], [], [], [], []
+    # First pass: names and years for everything, so missing years can borrow from the rest of the batch.
+    infos, guessed = {}, []
+    for name in files:
+        info = parse(os.path.splitext(name)[0])
+        infos[name] = info
+        if info and not info["year"] and LOOKUP_MISSING_YEARS and not args.no_lookup:
+            print("Looking up the year for " + name)
+            year, fix = lookup(info["artist"], info["title"])
+            if year:
+                info["year"] = year
+                looked_up.append("{} - {} ({})".format(info["artist"], info["title"], year))
+            if fix:
+                fixed.append("{} -> {}".format(info["artist"], fix))
+                info["artist"] = fix
+    known = sorted(int(v["year"]) for v in infos.values() if v and v["year"])
+    if len(known) >= 3 and known[-1] - known[0] <= 12:
+        typical = str(known[len(known) // 2])
+        for name, info in infos.items():
+            if info and not info["year"]:
+                info["year"] = typical
+                guessed.append("{} - {} ({})".format(info["artist"], info["title"], typical))
+
     for i, name in enumerate(files, 1):
         src = os.path.join(args.inbox, name)
         stem = os.path.splitext(name)[0]
         print("[{}/{}] {}".format(i, len(files), name))
-        info = parse(stem)
+        info = infos[name]
         if not info:
             reason = "name isn't 'Artist - Song (Year)'"
             print("    skipped: " + reason)
@@ -299,11 +379,6 @@ def main():
                 move_aside(src, args.inbox, ATTENTION, reason)
             continue
 
-        if not info["year"] and LOOKUP_MISSING_YEARS and not args.no_lookup:
-            info["year"] = lookup_year(info["artist"], info["title"])
-            if info["year"]:
-                looked_up.append("{} - {} ({})".format(info["artist"], info["title"], info["year"]))
-                print("    found year on MusicBrainz: " + info["year"])
         if not info["year"]:
             reason = "no year in the name and none found online; rename it with (Year)"
             print("    skipped: " + reason)
@@ -372,6 +447,14 @@ def main():
         print("Matched to artists you already have:")
         for m in sorted(set(merged)):
             print("  " + m)
+    if fixed:
+        print("Artist names corrected to the MusicBrainz spelling:")
+        for f in fixed:
+            print("  " + f)
+    if guessed:
+        print("No year found anywhere, so these got the typical year of the rest of the batch (worth a check):")
+        for g in guessed:
+            print("  " + g)
     if looked_up:
         print("Years looked up online (worth a glance):")
         for s in looked_up:
