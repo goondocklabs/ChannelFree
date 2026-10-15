@@ -176,14 +176,33 @@ def fmt(t):
     return "{}:{:02d}".format(int(t // 60), int(t % 60))
 
 
+def interlaced(ffmpeg, video):
+    """True for interlaced video (typical of DVD .VOB files), which needs deinterlacing to avoid comb lines."""
+    probe = os.path.join(os.path.dirname(ffmpeg), "ffprobe")
+    if not os.path.exists(probe):
+        probe = shutil.which("ffprobe") or "ffprobe"
+    try:
+        out = subprocess.run([probe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=field_order",
+                              "-of", "default=nw=1:nk=1", video], capture_output=True, text=True).stdout.strip()
+    except OSError:
+        out = ""
+    if out in ("tt", "bb", "tb", "bt"):
+        return True
+    return out != "progressive" and os.path.splitext(video)[1].lower() in (".vob", ".mpg", ".mpeg", ".ts", ".m2ts")
+
+
 def cut(ffmpeg, video, segments, names, outdir):
     os.makedirs(outdir, exist_ok=True)
+    deint = ["-vf", "bwdif=mode=send_frame"] if interlaced(ffmpeg, video) else []
+    if deint:
+        print("  (interlaced source: deinterlacing)")
     for (a, b), name in zip(segments, names):
         dst = os.path.join(outdir, name + ".mp4")
         print("  cutting: " + name)
-        r = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-ss", "{:.3f}".format(a),
-                            "-i", video, "-t", "{:.3f}".format(b - a), "-map", "0:v:0", "-map", "0:a:0?",
-                            "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p",
+        r = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-fflags", "+genpts",
+                            "-ss", "{:.3f}".format(a), "-i", video, "-t", "{:.3f}".format(b - a),
+                            "-map", "0:v:0", "-map", "0:a:0?"] + deint +
+                           ["-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p",
                             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", dst], capture_output=True, text=True)
         if r.returncode != 0:
             print("    failed: " + (r.stderr.strip().splitlines() or ["ffmpeg error"])[-1])
