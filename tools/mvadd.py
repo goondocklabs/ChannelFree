@@ -231,7 +231,10 @@ def ensure_nas(library):
     if os.path.isdir(library):
         return True
     print("Connecting to the NAS...")
-    subprocess.run(["osascript", "-e", 'mount volume "{}"'.format(NAS_SHARE)], capture_output=True)
+    try:
+        subprocess.run(["osascript", "-e", 'mount volume "{}"'.format(NAS_SHARE)], capture_output=True)
+    except OSError:
+        return False
     for _ in range(20):
         if os.path.isdir(library):
             return True
@@ -263,6 +266,7 @@ def main():
     ap.add_argument("--no-lookup", action="store_true", help="don't look up missing years online")
     ap.add_argument("--no-scan", action="store_true", help="don't ask Jellyfin to scan afterwards")
     ap.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
+    ap.add_argument("--delete-originals", action="store_true", help="delete inbox files once they're on the NAS")
     args = ap.parse_args()
 
     ffmpeg = find_ffmpeg()
@@ -357,7 +361,7 @@ def main():
             pass
         print("    added ({}): {}".format(how, os.path.relpath(dst, args.library)))
         added.append(out_stem)
-        if KEEP_ORIGINALS:
+        if KEEP_ORIGINALS and not args.delete_originals:
             move_aside(src, args.inbox, PROCESSED)
         else:
             os.remove(src)
