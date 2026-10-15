@@ -18,8 +18,8 @@ How it finds the cuts:
 
 It shows the plan and asks before cutting. If a cut is off, answer "n" and it saves
 the plan as a text file you can edit and run again with --cuts.
-The finished files go into the Music Video Inbox, named "Artist - Song (Year).mp4",
-and it can run mvadd right after to tag them and add them to Jellyfin.
+All cutting happens on this Mac. The finished files go into the Inbox next to this
+script, named "Artist - Song (Year).mp4", then mvadd tags them and copies them to the NAS.
 """
 
 import argparse
@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import sys
 
-INBOX = "/Volumes/Media/Music Video Inbox"
+INBOX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Inbox")  # on this Mac, next to the tools
 
 TRACK_RE = re.compile(r"^\s*(?:\d+\s*[.)\-:]\s*)?(?P<name>.+?)\s*$")
 
@@ -233,8 +233,7 @@ def main():
     video = os.path.abspath(os.path.expanduser(args.video))
     if not os.path.isfile(video):
         sys.exit("Can't find the video: " + video)
-    if not os.path.isdir(args.out):
-        sys.exit("Output folder not found: {}\nIs the NAS share mounted in Finder?".format(args.out))
+    os.makedirs(args.out, exist_ok=True)
 
     if args.cuts:
         segments, names = [], []

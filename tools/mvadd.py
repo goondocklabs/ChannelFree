@@ -2,7 +2,8 @@
 """
 mvadd: add music videos to the Jellyfin Music Videos library in one step.
 
-Drop video files into the inbox folder, named like:
+Everything is processed on this Mac, in the folder this script lives in; only finished
+videos are copied to the NAS. Drop video files into the Inbox folder next to this script, named like:
 
     Artist - Song (Year).mp4
     Artist - Song (Year) [Genre].mp4
@@ -13,8 +14,8 @@ then run this script (or double-click "Add Music Videos.command"). For each file
   1. reads the artist, song, year and optional genre from the file name
   2. looks up a missing year on MusicBrainz
   3. writes those tags into the video and an .nfo file Jellyfin reads
-  4. saves it as  Music Videos/Artist/Artist - Song (Year).mp4
-  5. moves the original into the inbox's _Processed folder
+  4. copies the finished file to the NAS as  Music Videos/Artist/Artist - Song (Year).mp4
+  5. moves the original into the Inbox's _Processed folder
 and finally tells Jellyfin to scan for the new videos.
 
 Files it can't handle go into the inbox's _Needs attention folder with the reason printed.
@@ -34,8 +35,11 @@ import urllib.request
 from xml.sax.saxutils import escape
 
 # ---------------------------------------------------------------- settings
-INBOX = "/Volumes/Media/Music Video Inbox"
-LIBRARY = "/Volumes/Media/Music Videos"
+WORKSHOP = os.path.dirname(os.path.abspath(__file__))   # the folder these tools live in, on your Mac
+INBOX = os.path.join(WORKSHOP, "Inbox")
+STAGING = os.path.join(WORKSHOP, ".working")
+LIBRARY = "/Volumes/Media/Music Videos"                  # on the NAS
+NAS_SHARE = "smb://192.168.4.117/Media"                  # mounted automatically if it isn't already
 JELLYFIN_URL = "http://192.168.4.117:8096"
 # Jellyfin API key: Dashboard > API Keys > +. Put it in ~/.mvadd_key (one line) so it isn't in this file.
 KEY_FILE = os.path.expanduser("~/.mvadd_key")
@@ -154,6 +158,29 @@ def move_aside(path, inbox, folder, note=None):
             f.write("{}: {}\n".format(os.path.basename(target), note))
 
 
+def ensure_nas(library):
+    """Mount the NAS share if needed (uses the password saved in your Keychain)."""
+    if os.path.isdir(library):
+        return True
+    print("Connecting to the NAS...")
+    subprocess.run(["osascript", "-e", 'mount volume "{}"'.format(NAS_SHARE)], capture_output=True)
+    for _ in range(20):
+        if os.path.isdir(library):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def copy_to_nas(src, dst):
+    """Copy to the NAS under a temporary name, check the size, then rename into place."""
+    tmp = os.path.join(os.path.dirname(dst), "." + os.path.basename(dst) + ".copying")
+    shutil.copyfile(src, tmp)
+    if os.path.getsize(tmp) != os.path.getsize(src):
+        os.remove(tmp)
+        raise RuntimeError("copy to the NAS came out the wrong size")
+    os.replace(tmp, dst)
+
+
 def jellyfin_scan(url, key):
     req = urllib.request.Request(url.rstrip("/") + "/Library/Refresh", method="POST", data=b"",
                                  headers={"Authorization": 'MediaBrowser Token="{}"'.format(key)})
@@ -173,15 +200,16 @@ def main():
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         sys.exit("ffmpeg isn't installed. Run:  brew install ffmpeg")
-    for label, folder in (("Inbox", args.inbox), ("Library", args.library)):
-        if not os.path.isdir(folder):
-            sys.exit("{} folder not found: {}\nIs the NAS share mounted in Finder?".format(label, folder))
+    os.makedirs(args.inbox, exist_ok=True)
+    if not args.dry_run and not ensure_nas(args.library):
+        sys.exit("Can't reach the Music Videos folder on the NAS:\n  {}\n"
+                 "Open Finder > Network > WOPR > Media once, then run this again.".format(args.library))
 
     files = sorted(f for f in os.listdir(args.inbox)
                    if os.path.isfile(os.path.join(args.inbox, f)) and not f.startswith(".")
                    and os.path.splitext(f)[1].lower() in VIDEO_EXTS)
     if not files:
-        print("Inbox is empty. Drop videos into:\n  " + args.inbox)
+        print("The Inbox is empty. Drop videos into:\n  " + args.inbox)
         return
 
     added, attention, looked_up = [], [], []
@@ -226,21 +254,32 @@ def main():
             print("    would add: " + os.path.relpath(dst, args.library))
             continue
 
-        os.makedirs(artist_dir, exist_ok=True)
-        tmp = os.path.join(artist_dir, "." + out_stem + ".partial.mp4")
+        stage_dir = os.path.join(STAGING, safe(info["artist"]))
+        os.makedirs(stage_dir, exist_ok=True)
+        local_mp4 = os.path.join(stage_dir, out_stem + ".mp4")
+        local_nfo = os.path.join(stage_dir, out_stem + ".nfo")
         try:
-            how = tag_copy(ffmpeg, src, tmp, info)
-            os.replace(tmp, dst)
-            write_nfo(os.path.join(artist_dir, out_stem + ".nfo"), info)
+            how = tag_copy(ffmpeg, src, local_mp4, info)        # done on this Mac
+            write_nfo(local_nfo, info)
+            os.makedirs(artist_dir, exist_ok=True)
+            copy_to_nas(local_mp4, dst)                          # then just the finished files go over
+            copy_to_nas(local_nfo, os.path.join(artist_dir, out_stem + ".nfo"))
         except Exception as e:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            for leftover in (local_mp4, local_nfo):
+                if os.path.exists(leftover):
+                    os.remove(leftover)
             reason = "couldn't process the video: {}".format(e)
             print("    failed: " + reason)
             attention.append((name, reason))
             move_aside(src, args.inbox, ATTENTION, reason)
             continue
 
+        for done in (local_mp4, local_nfo):
+            os.remove(done)
+        try:
+            os.rmdir(stage_dir)
+        except OSError:
+            pass
         print("    added ({}): {}".format(how, os.path.relpath(dst, args.library)))
         added.append(out_stem)
         if KEEP_ORIGINALS:
