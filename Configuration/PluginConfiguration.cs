@@ -46,6 +46,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Folder of music to play under the guide (as Jellyfin sees it, e.g. /media/Guide Music). Empty = silent.</summary>
     public string GuideMusicFolder { get; set; } = string.Empty;
 
+    /// <summary>Play the built-in synth music under the guide when no music folder is set.</summary>
+    public bool GuideDefaultMusic { get; set; } = true;
+
     /// <summary>Guide music volume in dB (negative = quieter).</summary>
     public int GuideMusicVolumeDb { get; set; } = -10;
 

@@ -44,6 +44,10 @@ public static class GuideChannel
     private const string Cream = "0xFFE178";
     private const string Ink = "0x14143C";
 
+    /// <summary>Length of the built-in loop (32 bars at 92 BPM).</summary>
+    private const double BuiltInLoopSeconds = 32 * 4 * 60 / 92.0;
+
+    private static readonly object MusicGate = new();
     private static readonly string[] MusicExt = { ".mp3", ".m4a", ".aac", ".ogg", ".flac", ".wav", ".opus" };
     private static readonly CultureInfo Us = CultureInfo.GetCultureInfo("en-US");
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
@@ -359,9 +363,15 @@ public static class GuideChannel
             args.AddRange(new[] { "-i", p });
         }
 
-        var music = PickMusic();
+        var music = PickMusic(out var builtIn);
         hasMusic = music is not null;
-        if (music is not null)
+        if (music is not null && builtIn)
+        {
+            // The built-in loop picks up where the clock says it should be, so runs join up musically.
+            var at = (localEpoch % BuiltInLoopSeconds).ToString("0.000", Inv);
+            args.AddRange(new[] { "-stream_loop", "-1", "-ss", at, "-i", music });
+        }
+        else if (music is not null)
         {
             args.AddRange(new[] { "-stream_loop", "-1", "-i", music });
         }
@@ -413,7 +423,8 @@ public static class GuideChannel
         if (music is not null)
         {
             var vol = Math.Clamp(Config.GuideMusicVolumeDb, -40, 6).ToString(Inv);
-            v.Append(Inv, $"[{a}:a]volume={vol}dB,aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d=1.5,arealtime[ba]");
+            var fadeIn = builtIn ? "0.3" : "1.5";
+            v.Append(Inv, $"[{a}:a]volume={vol}dB,aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d={fadeIn},arealtime[ba]");
         }
         else
         {
@@ -424,30 +435,78 @@ public static class GuideChannel
         return args;
     }
 
-    private static string? PickMusic()
+    /// <summary>A random track from the music folder; else the built-in synth loop (if turned on); else null = silent.</summary>
+    private static string? PickMusic(out bool builtIn)
     {
+        builtIn = false;
         var folder = Config.GuideMusicFolder;
-        if (string.IsNullOrWhiteSpace(folder))
+        if (!string.IsNullOrWhiteSpace(folder))
+        {
+            try
+            {
+                if (Directory.Exists(folder))
+                {
+                    var files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)
+                        .Where(f => MusicExt.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                        .Take(2000)
+                        .ToList();
+                    if (files.Count > 0)
+                    {
+                        return files[Random.Shared.Next(files.Count)];
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // fall through to the built-in music
+            }
+        }
+
+        if (!Config.GuideDefaultMusic)
         {
             return null;
         }
 
-        try
+        var bundled = BuiltInMusic();
+        builtIn = bundled is not null;
+        return bundled;
+    }
+
+    /// <summary>The bundled synth loop, written next to the plugin settings once.</summary>
+    private static string? BuiltInMusic()
+    {
+        lock (MusicGate)
         {
-            if (!Directory.Exists(folder))
+            try
+            {
+                var dir = Path.Combine(ChannelScheduler.BaseDir(), "guide");
+                Directory.CreateDirectory(dir);
+                var file = Path.Combine(dir, "guide-synth.opus");
+                if (!File.Exists(file))
+                {
+                    var asm = typeof(Plugin).Assembly;
+                    var res = asm.GetManifestResourceNames().FirstOrDefault(r => r.EndsWith(".guide-synth.opus", StringComparison.OrdinalIgnoreCase));
+                    if (res is null)
+                    {
+                        return null;
+                    }
+
+                    var tmp = file + ".tmp";
+                    using (var src = asm.GetManifestResourceStream(res)!)
+                    using (var dst = File.Create(tmp))
+                    {
+                        src.CopyTo(dst);
+                    }
+
+                    File.Move(tmp, file, true);
+                }
+
+                return file;
+            }
+            catch (Exception)
             {
                 return null;
             }
-
-            var files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)
-                .Where(f => MusicExt.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                .Take(2000)
-                .ToList();
-            return files.Count == 0 ? null : files[Random.Shared.Next(files.Count)];
-        }
-        catch (Exception)
-        {
-            return null;
         }
     }
 

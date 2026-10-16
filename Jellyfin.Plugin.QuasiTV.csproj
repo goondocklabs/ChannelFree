@@ -34,6 +34,7 @@
     <EmbeddedResource Include="Fonts\DejaVuSans-Bold.ttf" />
     <None Remove="Fonts\**" />
     <EmbeddedResource Include="Sounds\stinger.mp3" />
+    <EmbeddedResource Include="Sounds\guide-synth.opus" />
     <EmbeddedResource Include="Web\client.js" />
     <None Remove="Sounds\**" />
     <None Remove="Web\**" />

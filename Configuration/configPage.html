@@ -242,7 +242,8 @@
                             <div class="inputContainer"><input is="emby-input" type="number" id="GuideNumber" min="1" max="9999" label="Guide channel number" /></div>
                             <div class="inputContainer"><input is="emby-input" type="text" id="GuideTitle" maxlength="20" label="Name at the top of the guide (leave empty to use your server's name)" /></div>
                             <div class="selectContainer"><select is="emby-select" id="GuideScrollSpeed" label="Scroll speed"><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option></select></div>
-                            <div class="inputContainer"><input is="emby-input" type="text" id="GuideMusicFolder" label="Background music folder (as Jellyfin sees it, e.g. /media/Guide Music; leave empty for silence)" /></div>
+                            <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="GuideDefaultMusic" /><span>Play the built-in synth music (used when no music folder is set)</span></label></div>
+                            <div class="inputContainer"><input is="emby-input" type="text" id="GuideMusicFolder" label="Your own music folder (as Jellyfin sees it, e.g. /media/Guide Music). A random track plays each half hour." /></div>
                             <div class="inputContainer"><input is="emby-input" type="number" id="GuideMusicVolumeDb" min="-40" max="6" label="Music volume (dB, negative = quieter)" /></div>
 
                             <h3>Info banner</h3>
@@ -1283,6 +1284,7 @@
                         $('#GuideTitle').value = config.GuideTitle || '';
                         $('#GuideScrollSpeed').value = config.GuideScrollSpeed || 'normal';
                         $('#GuideMusicFolder').value = config.GuideMusicFolder || '';
+                        $('#GuideDefaultMusic').checked = config.GuideDefaultMusic !== false;
                         $('#GuideMusicVolumeDb').value = config.GuideMusicVolumeDb == null ? -10 : config.GuideMusicVolumeDb;
                         showUrls(config);
                         Dashboard.hideLoadingMsg();
@@ -1326,6 +1328,7 @@
                         config.GuideTitle = $('#GuideTitle').value.trim();
                         config.GuideScrollSpeed = $('#GuideScrollSpeed').value || 'normal';
                         config.GuideMusicFolder = $('#GuideMusicFolder').value.trim();
+                        config.GuideDefaultMusic = $('#GuideDefaultMusic').checked;
                         var gv = parseInt($('#GuideMusicVolumeDb').value, 10);
                         config.GuideMusicVolumeDb = isNaN(gv) ? -10 : gv;
                         ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
