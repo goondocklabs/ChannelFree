@@ -389,6 +389,7 @@ public class QuasiTvController : ControllerBase
                 var banner = string.Empty;
                 var bumperRun = false;
                 List<double>? pops = null;
+                List<PopupVideo.Bubble>? bubbles = null;
 
                 try
                 {
@@ -443,9 +444,10 @@ public class QuasiTvController : ControllerBase
                                 try
                                 {
                                     var facts = await PopupVideo.FactsAsync(slot.Item, _http, _logger, TimeSpan.FromSeconds(2.5), run.Token).ConfigureAwait(false);
-                                    var (popFilter, popTimes) = PopupVideo.Build(facts, itemOffset, slot.Play, Path.Combine(workDir, "popup"));
-                                    banner += popFilter;
-                                    pops = Config.PopupVideoSound && popTimes.Count > 0 ? popTimes : null;
+                                    var (popBubbles, popTimes) = await PopupVideo.BuildAsync(
+                                        _mediaEncoder.EncoderPath, facts, itemOffset, slot.Play, OutputHeight(slot.Item), Path.Combine(workDir, "popup"), _logger, run.Token).ConfigureAwait(false);
+                                    bubbles = popBubbles.Count > 0 ? popBubbles : null;
+                                    pops = bubbles is not null && Config.PopupVideoSound && popTimes.Count > 0 ? popTimes : null;
 
                                     // Look up the next few videos while this one plays.
                                     var soon = ChannelScheduler.Slots(channel, now, now.AddMinutes(20)).Select(s => s.Item)
@@ -459,7 +461,7 @@ public class QuasiTvController : ControllerBase
                             }
 
                             _logger.LogInformation("QuasiTV: {Channel} playing {Title} from {Offset:hh\\:mm\\:ss}{Trim} ({Encoder})", channel.Name, slot.Item.Name, itemOffset, slot.Trimmed ? $", credits cut at {slot.Play:hh\\:mm\\:ss}" : string.Empty, useHw ? "vaapi" : "x264");
-                            await RunFfmpeg(slot.Item.Path, AudioMap(slot.Item), itemOffset, slot.Trimmed ? remaining : null, streamSeconds, useHw, banner, lead.TotalSeconds, pops, run.Token).ConfigureAwait(false);
+                            await RunFfmpeg(slot.Item.Path, AudioMap(slot.Item), itemOffset, slot.Trimmed ? remaining : null, streamSeconds, useHw, banner, lead.TotalSeconds, bubbles, pops, run.Token).ConfigureAwait(false);
                         }
                     }
                 }
@@ -492,7 +494,7 @@ public class QuasiTvController : ControllerBase
                         continue;
                     }
 
-                    if (banner.Length > 0)
+                    if (banner.Length > 0 || bubbles is not null)
                     {
                         captionBroken |= slot.Item is MusicVideo;
                         popupBroken |= slot.Item is MusicVideo;
@@ -702,7 +704,7 @@ public class QuasiTvController : ControllerBase
 
     /// <summary>Play one library item from <paramref name="offset"/>. If <paramref name="playFor"/> is set (credits cut short),
     /// stop there with a 1.5 s fade to black + audio fade.</summary>
-    private async Task RunFfmpeg(string path, string audioMap, TimeSpan offset, TimeSpan? playFor, double tsOffsetSeconds, bool useHw, string banner, double burstSeconds, IReadOnlyList<double>? pops, CancellationToken ct)
+    private async Task RunFfmpeg(string path, string audioMap, TimeSpan offset, TimeSpan? playFor, double tsOffsetSeconds, bool useHw, string banner, double burstSeconds, IReadOnlyList<PopupVideo.Bubble>? bubbles, IReadOnlyList<double>? pops, CancellationToken ct)
     {
         var inv = CultureInfo.InvariantCulture;
         var maxH = Math.Clamp(Config.MaxHeight, 360, 1080);
@@ -738,8 +740,15 @@ public class QuasiTvController : ControllerBase
 
         args.AddRange(new[] { "-ss", offset.TotalSeconds.ToString("0.000", inv), "-i", path });
 
-        // Pop-Up Video "bloops": a second input, mixed in under the video's own sound at each bubble.
-        var bloop = pops is { Count: > 0 } ? PopupVideo.Sound() : null;
+        // Pop-Up Video: each bubble picture is an extra input laid over the picture while it shows,
+        // and the "bloop" is one more input mixed under the video's own sound as each bubble appears.
+        var nb = bubbles?.Count ?? 0;
+        foreach (var bubble in bubbles ?? Array.Empty<PopupVideo.Bubble>())
+        {
+            args.AddRange(new[] { "-i", bubble.Image });
+        }
+
+        var bloop = nb > 0 && pops is { Count: > 0 } ? PopupVideo.Sound() : null;
         if (bloop is not null)
         {
             args.AddRange(new[] { "-i", bloop });
@@ -750,7 +759,7 @@ public class QuasiTvController : ControllerBase
             args.AddRange(new[] { "-t", t.TotalSeconds.ToString("0.000", inv) });
         }
 
-        if (bloop is null)
+        if (nb == 0)
         {
             args.AddRange(new[] { "-map", "0:v:0", "-map", audioMap });
             args.AddRange(new[] { "-vf", useHw ? vf + ",format=nv12,hwupload" : vf });
@@ -761,27 +770,46 @@ public class QuasiTvController : ControllerBase
         }
         else
         {
-            var n = pops!.Count;
             var fc = new StringBuilder();
-            fc.Append(inv, $"[0:v:0]{(useHw ? vf + ",format=nv12,hwupload" : vf)}[pv];");
-            fc.Append(inv, $"[{audioMap.TrimEnd('?')}]{(af.Length > 0 ? af : "anull")},aresample=48000,aformat=channel_layouts=stereo[pm];");
-            fc.Append(inv, $"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume=0.4,asplit={n}");
-            for (var i = 0; i < n; i++)
+            fc.Append(inv, $"[0:v:0]{vf}[pv0];");
+            for (var i = 0; i < nb; i++)
             {
-                fc.Append(inv, $"[ps{i}]");
+                var bubble = bubbles![i];
+                fc.Append(inv, $"[pv{i}][{i + 1}:v]overlay={bubble.Place}:enable='between(t,{bubble.From:0.00},{bubble.To:0.00})'[pv{i + 1}];");
             }
 
-            fc.Append(';');
-            var mixIn = new StringBuilder("[pm]");
-            for (var i = 0; i < n; i++)
-            {
-                var ms = Math.Max(0, (int)Math.Round(pops[i] * 1000));
-                fc.Append(inv, $"[ps{i}]adelay={ms}:all=1[pd{i}];");
-                mixIn.Append(inv, $"[pd{i}]");
-            }
+            fc.Append(inv, $"[pv{nb}]{(useHw ? "format=nv12,hwupload" : "null")}[pv]");
 
-            fc.Append(inv, $"{mixIn}amix=inputs={n + 1}:duration=first:normalize=0[pa]");
-            args.AddRange(new[] { "-filter_complex", fc.ToString(), "-map", "[pv]", "-map", "[pa]" });
+            if (bloop is not null)
+            {
+                var n = pops!.Count;
+                fc.Append(inv, $";[{audioMap.TrimEnd('?')}]{(af.Length > 0 ? af : "anull")},aresample=48000,aformat=channel_layouts=stereo[pm];");
+                fc.Append(inv, $"[{nb + 1}:a]aresample=48000,aformat=channel_layouts=stereo,volume=0.4,asplit={n}");
+                for (var i = 0; i < n; i++)
+                {
+                    fc.Append(inv, $"[ps{i}]");
+                }
+
+                fc.Append(';');
+                var mixIn = new StringBuilder("[pm]");
+                for (var i = 0; i < n; i++)
+                {
+                    var ms = Math.Max(0, (int)Math.Round(pops[i] * 1000));
+                    fc.Append(inv, $"[ps{i}]adelay={ms}:all=1[pd{i}];");
+                    mixIn.Append(inv, $"[pd{i}]");
+                }
+
+                fc.Append(inv, $"{mixIn}amix=inputs={n + 1}:duration=first:normalize=0[pa]");
+                args.AddRange(new[] { "-filter_complex", fc.ToString(), "-map", "[pv]", "-map", "[pa]" });
+            }
+            else
+            {
+                args.AddRange(new[] { "-filter_complex", fc.ToString(), "-map", "[pv]", "-map", audioMap });
+                if (af.Length > 0)
+                {
+                    args.AddRange(new[] { "-af", af });
+                }
+            }
         }
 
         args.AddRange(EncoderArgs(useHw, tsOffsetSeconds));
@@ -925,6 +953,26 @@ public class QuasiTvController : ControllerBase
             _logger.LogDebug(ex, "QuasiTV: no stream info for {Item}; using the first audio track", item.Name);
             return "0:a:0?";
         }
+    }
+
+    /// <summary>Picture height after the channel's scaling (min of the file's height and the max height).</summary>
+    private static int OutputHeight(BaseItem item)
+    {
+        var maxH = Math.Clamp(Config.MaxHeight, 360, 1080);
+        try
+        {
+            var video = item.GetMediaStreams().FirstOrDefault(m => m.Type == MediaStreamType.Video);
+            if (video?.Height is int h && h > 0)
+            {
+                return Math.Min(maxH, h);
+            }
+        }
+        catch (Exception)
+        {
+            // no stream info
+        }
+
+        return maxH;
     }
 
     private static string? WideArt(BaseItem item)

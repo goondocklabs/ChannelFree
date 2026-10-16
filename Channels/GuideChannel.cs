@@ -547,7 +547,7 @@ public static class GuideChannel
     private static string Box(int x, int y, int w, int h, string color, int thickness = 0)
         => string.Format(Inv, "drawbox=x={0}:y={1}:w={2}:h={3}:color={4}:t={5}", x, y, w, h, color, thickness > 0 ? thickness.ToString(Inv) : "fill");
 
-    private static async Task<bool> Render(string ffmpeg, IEnumerable<string> args, ILogger logger, CancellationToken ct)
+    internal static async Task<bool> Render(string ffmpeg, IEnumerable<string> args, ILogger logger, CancellationToken ct)
     {
         var psi = new ProcessStartInfo(ffmpeg)
         {

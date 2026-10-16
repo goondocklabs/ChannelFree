@@ -16,8 +16,8 @@ namespace Jellyfin.Plugin.QuasiTV.Channels;
 public static partial class PopupVideo
 {
     private const double ShowFor = 7;
-    private const int WrapAt = 30;
-    private const int MaxLines = 5;
+    private const int WrapAt = 28;
+    private const int MaxLines = 4;
 
     private static readonly ConcurrentDictionary<Guid, Task<IReadOnlyList<string>>> InFlight = new();
     private static readonly JsonSerializerOptions Json = new();
@@ -273,14 +273,38 @@ public static partial class PopupVideo
 
     // ------------------------------------------------------------ drawing
 
-    /// <summary>Bubbles for this run: extra filter chain (starting with ",") and the times (seconds into the run) they pop up.</summary>
-    public static (string Filter, List<double> Pops) Build(IReadOnlyList<string> facts, TimeSpan itemOffset, TimeSpan play, string workDir)
+    /// <summary>One bubble picture and when/where it shows (seconds into this run).</summary>
+    public sealed record Bubble(string Image, string Place, double From, double To);
+
+    // Badge on the left of each bubble, in turn: glyph + colour.
+    private static readonly (string Glyph, int R, int G, int B)[] Badges =
     {
+        ("?", 0xE8, 0x45, 0x7A),
+        ("!", 0x2F, 0x7D, 0xE1),
+        ("♪", 0xF2, 0x8C, 0x28),
+        ("★", 0x2B, 0xB6, 0x73)
+    };
+
+    // Where bubbles go, in turn (overlay x:y). Bubbles only show mid-song, so the lower left is free.
+    private static readonly string[] Spots =
+    {
+        "x=main_w*0.05:y=main_h-overlay_h-main_h*0.08",
+        "x=main_w-overlay_w-main_w*0.05:y=main_h*0.08",
+        "x=main_w*0.05:y=main_h*0.08",
+        "x=main_w-overlay_w-main_w*0.05:y=main_h-overlay_h-main_h*0.08"
+    };
+
+    /// <summary>Draws this run's bubbles as transparent pictures sized for a <paramref name="height"/>-line picture,
+    /// and returns them with the times (seconds into the run) they pop up.</summary>
+    public static async Task<(List<Bubble> Bubbles, List<double> Pops)> BuildAsync(
+        string ffmpeg, IReadOnlyList<string> facts, TimeSpan itemOffset, TimeSpan play, int height, string workDir, ILogger logger, CancellationToken ct)
+    {
+        var bubbles = new List<Bubble>();
         var pops = new List<double>();
         var fonts = Banner.FontDir();
         if (fonts is null || facts.Count == 0)
         {
-            return (string.Empty, pops);
+            return (bubbles, pops);
         }
 
         var len = play.TotalSeconds;
@@ -289,27 +313,15 @@ public static partial class PopupVideo
         var last = len - 24;     // before the closing caption
         if (last - First < 8)
         {
-            return (string.Empty, pops);
+            return (bubbles, pops);
         }
 
         var max = Math.Clamp(Config.PopupVideoMaxPerVideo, 1, 12);
         var count = Math.Min(Math.Min(facts.Count, max), (int)((last - First) / 14) + 1);
         var gap = count > 1 ? (last - First) / (count - 1) : 0;
-
-        var inv = CultureInfo.InvariantCulture;
-        var regular = Path.Combine(fonts, "DejaVuSans.ttf");
+        var bold = Path.Combine(fonts, "DejaVuSans-Bold.ttf");
         Directory.CreateDirectory(workDir);
 
-        // Where bubbles go, in turn (never the lower left, where the artist/song caption lives).
-        var spots = new[]
-        {
-            ("iw*0.05", "ih*0.07", "w*0.05", "h*0.07"),
-            ("iw-ih*0.62-iw*0.05", "ih*0.07", "w-h*0.62-w*0.05", "h*0.07"),
-            ("iw-ih*0.62-iw*0.05", "ih*0.36", "w-h*0.62-w*0.05", "h*0.36"),
-            ("iw*0.05", "ih*0.30", "w*0.05", "h*0.30")
-        };
-
-        var sb = new StringBuilder();
         for (var i = 0; i < count; i++)
         {
             var at = First + (i * gap);
@@ -320,32 +332,72 @@ public static partial class PopupVideo
                 continue; // already over when this run starts
             }
 
-            a = Math.Max(0, a);
-            var lines = Wrap(facts[i]);
-            var boxH = (lines.Count * 0.039) + 0.05;
-            var (bx, by, tx, ty) = spots[i % spots.Length];
-            var on = string.Format(inv, ":enable='between(t,{0:0.00},{1:0.00})'", a, b);
-            string Box(string x, string y, string w, string h, string color) => $",drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill{on}";
-            var hh = boxH.ToString("0.000", inv);
+            var file = Path.Combine(workDir, $"bubble{i}.png");
+            if (!await Draw(ffmpeg, facts[i], Badges[i % Badges.Length], Math.Clamp(height, 240, 1080), bold, workDir, i, file, logger, ct).ConfigureAwait(false))
+            {
+                continue;
+            }
 
-            // shadow, chamfered white bubble (two overlapping boxes), and the little "thought" dots
-            sb.Append(Box($"{bx}+ih*0.008", $"{by}+ih*0.008", "ih*0.62", $"ih*{hh}", "black@0.35"));
-            sb.Append(Box(bx, $"{by}+ih*0.012", "ih*0.62", $"ih*{hh}-ih*0.024", "white@0.97"));
-            sb.Append(Box($"{bx}+ih*0.012", by, "ih*0.596", $"ih*{hh}", "white@0.97"));
-            sb.Append(Box($"{bx}+ih*0.09", $"{by}+ih*{(boxH + 0.012).ToString("0.000", inv)}", "ih*0.032", "ih*0.032", "white@0.97"));
-            sb.Append(Box($"{bx}+ih*0.06", $"{by}+ih*{(boxH + 0.056).ToString("0.000", inv)}", "ih*0.018", "ih*0.018", "white@0.97"));
-
-            var f = Path.Combine(workDir, $"pop{i}.txt");
-            File.WriteAllText(f, string.Join('\n', lines), new UTF8Encoding(false));
-            sb.Append(CultureInfo.InvariantCulture, $",drawtext=fontfile={regular}:textfile={f}:expansion=none:fontcolor=0x1A1A2E:fontsize=h*0.032:x={tx}+h*0.028:y={ty}+h*0.026{on}");
-
-            if (at - off >= 0.3)
+            bubbles.Add(new Bubble(file, Spots[i % Spots.Length], Math.Max(0, a), b));
+            if (a >= 0.3)
             {
                 pops.Add(a);
             }
         }
 
-        return (sb.ToString(), pops);
+        return (bubbles, pops);
+    }
+
+    /// <summary>White rounded bubble with a dark outline, bold text, and a round badge on the left (one transparent PNG).</summary>
+    private static Task<bool> Draw(string ffmpeg, string fact, (string Glyph, int R, int G, int B) badge, int h, string bold, string dir, int n, string file, ILogger logger, CancellationToken ct)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var lines = Wrap(fact);
+        var fs = (int)Math.Round(0.034 * h);
+        var lh = (int)Math.Round(fs * 1.25);
+        var pad = (int)Math.Round(0.02 * h);
+        var ol = Math.Max(3, (int)Math.Round(h / 170.0));   // outline
+        var ri = (int)Math.Round(0.05 * h);                 // badge radius
+        var ring = Math.Max(3, (int)Math.Round(h / 150.0)); // white ring inside the badge
+        var textW = (int)Math.Round(lines.Max(l => l.Length) * 0.64 * fs);
+        var hb = Math.Max((lines.Count * lh) + (2 * pad), (2 * ri) + ol);
+        var x0 = ri + ol;
+        var tx = x0 + ri + (int)Math.Round(0.018 * h);
+        var wc = tx + textW + pad + ol + 2;
+        var hc = hb + (2 * ol) + 2;
+        var y0 = ol + 1;
+        var x1 = wc - ol - 2;
+        var y1 = hc - ol - 2;
+        var r = Math.Min(hb / 2, (int)Math.Round(0.03 * h));
+        var cx = ri + ol + 1;
+        var cy = hc / 2;
+
+        // Signed distances: dB to the bubble edge, dI to the badge edge (negative = inside).
+        var dB = string.Format(inv, "hypot(max(max({0}+{2}-X,X-({1}-{2})),0),max(max({3}+{2}-Y,Y-({4}-{2})),0))-{2}", x0, x1, r, y0, y1);
+        var dI = string.Format(inv, "hypot(X-{0},Y-{1})-{2}", cx, cy, ri);
+        string Channel(int core, int white, int dark) => string.Format(
+            inv,
+            "'st(0,{0});st(1,{1});if(lte(ld(1),-{2}),{3},if(lte(ld(1),0),{4},if(lte(ld(1),{5}),{6},if(lte(ld(0),0),{4},{6}))))'",
+            dB, dI, ring, core, white, ol, dark);
+        var alpha = string.Format(inv, "'st(0,{0});st(1,{1});255*clip(max({2}-ld(1),{2}-ld(0))+0.5,0,1)'", dB, dI, ol);
+
+        var textFile = Path.Combine(dir, $"bubble{n}.txt");
+        var glyphFile = Path.Combine(dir, $"badge{n}.txt");
+        File.WriteAllText(textFile, string.Join('\n', lines), new UTF8Encoding(false));
+        File.WriteAllText(glyphFile, badge.Glyph, new UTF8Encoding(false));
+
+        var vf = string.Join(
+            ",",
+            "format=rgba",
+            $"geq=r={Channel(badge.R, 255, 20)}:g={Channel(badge.G, 255, 20)}:b={Channel(badge.B, 255, 20)}:a={alpha}",
+            string.Format(inv, "drawtext=fontfile={0}:textfile={1}:expansion=none:fontsize={2}:fontcolor=white:x={3}-tw/2:y={4}-th/2", bold, glyphFile, (int)Math.Round(ri * 1.15), cx, cy),
+            string.Format(inv, "drawtext=fontfile={0}:textfile={1}:expansion=none:fontsize={2}:line_spacing={3}:fontcolor=0x111111:x={4}:y=(h-th)/2", bold, textFile, fs, lh - fs, tx));
+
+        return GuideChannel.Render(
+            ffmpeg,
+            new[] { "-f", "lavfi", "-i", string.Format(inv, "color=c=black@0:s={0}x{1}:d=1", wc, hc), "-vf", vf, "-frames:v", "1", file },
+            logger,
+            ct);
     }
 
     private static List<string> Wrap(string text)
