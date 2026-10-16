@@ -67,6 +67,32 @@ Answer [] if the sources have nothing usable about this song or artist.
 Source text:
 {sources}"""
 
+# When Wikipedia has nothing usable: Claude's own knowledge, held to a higher bar.
+MEMORY_PROMPT = """You write the trivia bubbles for VH1's "Pop-Up Video" (1996 to 2002): short, cheeky, \
+surprising facts that pop up while a music video plays.
+
+Write up to {n} bubbles for this video, from your own knowledge:
+Artist: {artist}
+Song: {song}
+Year: {year}
+(The names come from a file name and may have small typos; if it's obvious which artist and song are meant, use those.)
+
+Rules:
+- Include ONLY facts you are highly confident are true and widely documented. No guesses, no invented \
+names, places, numbers, chart positions or quotes. If you're unsure about a detail, leave that bubble out.
+- Fewer true bubbles beat more shaky ones. If you don't know this song or artist well, answer [].
+- Each bubble is one or two short sentences, at most 110 characters. Playful tone, no profanity, no emoji.
+- Best bubble first.
+
+Answer with only a JSON array of strings, like ["first bubble", "second bubble"]."""
+
+# When only the song article is missing but the artist's is there.
+EXTRA_SONG_FACTS = """
+
+Note: there was no Wikipedia article for this song itself. Besides the source text, you may add up to 3 \
+bubbles about the song or its video from your own knowledge, but only facts you are highly confident are true \
+and widely documented."""
+
 
 def key(s):
     s = unicodedata.normalize("NFKD", s.replace("’", "'"))
@@ -172,11 +198,11 @@ def artist_sources(artist):
     return None, ""
 
 
-def ask_claude(api_key, artist, song, year, sources):
+def ask_claude(api_key, prompt):
     body = json.dumps({
         "model": MODEL,
         "max_tokens": 3000,
-        "messages": [{"role": "user", "content": PROMPT.format(n=BUBBLES, artist=artist, song=song, year=year or "unknown", sources=sources)}],
+        "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     res = http_json("https://api.anthropic.com/v1/messages", data=body, headers={
         "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
@@ -202,33 +228,65 @@ def api_key():
     return ""
 
 
-def facts_for(artist, song, year, log=print):
-    """Bubbles for one video, or [] (no key, nothing on Wikipedia, or a network problem)."""
+def facts_with_source(artist, song, year, log=print):
+    """(bubbles, where they came from): "wikipedia", "memory" (Claude's own knowledge) or "none"."""
     k = api_key()
     if not k:
-        return []
+        return [], "none"
     s_title, s_text = song_sources(artist, song)
     a_title, a_text = artist_sources(artist)
     if not s_text and not a_text:
-        log("    pop-up: nothing on Wikipedia for this one")
-        return []
+        log("    pop-up: nothing on Wikipedia, asking Claude what it knows")
+        bubbles = ask_claude(k, MEMORY_PROMPT.format(n=min(BUBBLES, 5), artist=artist, song=song, year=year or "unknown"))
+        return bubbles, ("memory" if bubbles else "none")
     sources = ""
     if s_text:
         sources += "=== Wikipedia: {} ===\n{}\n\n".format(s_title, s_text)
     if a_text:
         sources += "=== Wikipedia: {} ===\n{}\n".format(a_title, a_text)
-    return ask_claude(k, artist, song, year, sources)
+    prompt = PROMPT.format(n=BUBBLES, artist=artist, song=song, year=year or "unknown", sources=sources)
+    if not s_text:
+        prompt += EXTRA_SONG_FACTS
+    bubbles = ask_claude(k, prompt)
+    return bubbles, ("wikipedia" if bubbles else "none")
+
+
+def facts_for(artist, song, year, log=print):
+    """Bubbles for one video, or [] (no key, nothing found, or a network problem)."""
+    return facts_with_source(artist, song, year, log)[0]
 
 
 def popup_path(video_path):
     return os.path.splitext(video_path)[0] + ".popup.txt"
 
 
-def write_popup(path, bubbles, artist, song):
+NOTHING_FOUND = "checked Wikipedia and Claude"
+
+
+def write_popup(path, bubbles, artist, song, source="wikipedia"):
     with open(path, "w", encoding="utf-8") as f:
-        f.write("# Pop-Up Video facts for {} - {} (from Wikipedia, written up by Claude). Edit freely; one per line.\n".format(artist, song))
+        if not bubbles:
+            f.write("# No Pop-Up facts found for {} - {} ({}). Add your own, one per line.\n".format(artist, song, NOTHING_FOUND))
+        elif source == "memory":
+            f.write("# Pop-Up Video facts for {} - {} (no Wikipedia article; from Claude's own knowledge, so double-check "
+                    "anything surprising). Edit freely; one per line.\n".format(artist, song))
+        else:
+            f.write("# Pop-Up Video facts for {} - {} (from Wikipedia, written up by Claude). Edit freely; one per line.\n".format(artist, song))
         for b in bubbles:
             f.write(b + "\n")
+
+
+def needs_facts(video_path):
+    """No facts file yet, or an empty one from before Claude's own knowledge was used as a fallback."""
+    p = popup_path(video_path)
+    if not os.path.exists(p):
+        return True
+    try:
+        text = open(p, encoding="utf-8").read()
+    except OSError:
+        return False
+    has_facts = any(l.strip() and not l.lstrip().startswith("#") for l in text.splitlines())
+    return not has_facts and NOTHING_FOUND not in text
 
 
 def info_from(video_path):
@@ -261,7 +319,7 @@ def backfill(library, limit=None):
         for f in sorted(files):
             if not f.startswith(".") and os.path.splitext(f)[1].lower() in VIDEO_EXTS:
                 videos.append(os.path.join(root, f))
-    todo = [v for v in sorted(videos) if not os.path.exists(popup_path(v))]
+    todo = [v for v in sorted(videos) if needs_facts(v)]
     print("{} music videos, {} still need Pop-Up facts.".format(len(videos), len(todo)))
     made = empty = failed = 0
     for i, v in enumerate(todo[:limit] if limit else todo, 1):
@@ -272,7 +330,7 @@ def backfill(library, limit=None):
             continue
         artist, song, year = info
         try:
-            bubbles = facts_for(artist, song, year, log=lambda s: None)
+            bubbles, source = facts_with_source(artist, song, year, log=lambda s: None)
         except Exception as e:  # network trouble: leave it for the next run
             if "HTTP 401" in str(e) or "HTTP 403" in str(e) or "credit balance" in str(e).lower():
                 sys.exit(str(e))
@@ -280,9 +338,9 @@ def backfill(library, limit=None):
             failed += 1
             continue
         if bubbles:
-            write_popup(popup_path(v), bubbles, artist, song)
+            write_popup(popup_path(v), bubbles, artist, song, source)
             made += 1
-            print("[{}/{}] {}: {} bubbles".format(i, len(todo), name, len(bubbles)))
+            print("[{}/{}] {}: {} bubbles{}".format(i, len(todo), name, len(bubbles), " (from Claude's own knowledge)" if source == "memory" else ""))
         else:
             # An empty file (just the comment line) so it isn't looked up again; Channel Free then tries Wikipedia itself.
             write_popup(popup_path(v), [], artist, song)

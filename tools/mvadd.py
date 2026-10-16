@@ -446,12 +446,13 @@ def main():
         try:
             import mvpopup
             if mvpopup.api_key():
-                bubbles = mvpopup.facts_for(info["artist"], info["title"], info["year"])
+                bubbles, source = mvpopup.facts_with_source(info["artist"], info["title"], info["year"])
                 local_pop = os.path.join(stage_dir, out_stem + ".popup.txt")
-                mvpopup.write_popup(local_pop, bubbles, info["artist"], info["title"])
+                mvpopup.write_popup(local_pop, bubbles, info["artist"], info["title"], source)
                 copy_to_nas(local_pop, os.path.join(artist_dir, out_stem + ".popup.txt"))
                 os.remove(local_pop)
-                print("    pop-up facts: {}".format(len(bubbles) or "none found"))
+                print("    pop-up facts: {}{}".format(len(bubbles) or "none found",
+                                                     " (from Claude's own knowledge)" if source == "memory" else ""))
         except Exception as e:
             print("    pop-up facts skipped ({})".format(e))
 
