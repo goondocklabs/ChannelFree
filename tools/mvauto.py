@@ -52,7 +52,8 @@ INBOX = os.path.join(HERE, "Inbox")
 LOG = os.path.join(VIDEO_DIR, "_log.txt")
 LOCK = os.path.join(HERE, ".mvauto.lock")
 ACOUSTID_KEY_FILE = os.path.expanduser("~/.acoustid_key")
-SINGLE_MAX_SECONDS = 12 * 60   # anything shorter is treated as one music video
+SINGLE_MAX_SECONDS = 12 * 60   # an unnamed file shorter than this is treated as one music video
+NAMED_SINGLE_MAX_SECONDS = 25 * 60  # "Artist - Song" with no track list: one video (long ones like Thriller included)
 UA = {"User-Agent": "mvauto/1.0 (personal Jellyfin helper)"}
 
 
@@ -106,14 +107,19 @@ def tracks_from_text(text):
 
 
 def sidecar_tracks(video):
+    """Track list from a text file next to the video: (names, source, start times or None).
+    Start times are used when every line begins with one, e.g. "0:00 Artist - Song" (YouTube description style)."""
     stem = os.path.splitext(video)[0]
     for cand in (stem + ".txt", stem + " - tracks.txt", os.path.join(os.path.dirname(video), "tracks.txt")):
         if os.path.isfile(cand):
             with open(cand, encoding="utf-8", errors="replace") as f:
-                t = tracks_from_text(f.read())
-            if t:
-                return t, "the text file " + os.path.basename(cand)
-    return None, None
+                lines = [l for l in f.read().splitlines() if mvsplit.clean_track(l)]
+            names = [mvsplit.clean_track(l) for l in lines]
+            if names:
+                starts = [mvsplit.stamp_seconds(l) for l in lines]
+                ok = all(s is not None for s in starts) and all(b > a for a, b in zip(starts, starts[1:]))
+                return names, "the text file " + os.path.basename(cand), (starts if ok else None)
+    return None, None, None
 
 
 def chapter_tracks(ffprobe, video):
@@ -263,13 +269,23 @@ def process(path, ffmpeg, ffprobe, key):
     # Look for a track list first: if there is one, it's a compilation whatever its length.
     segments, names = chapter_tracks(ffprobe, path)
     source = "the file's chapters" if segments else None
+    starts = None
     if not segments:
-        names, source = sidecar_tracks(path)
-        if not names and not (single_name and total <= SINGLE_MAX_SECONDS):
+        names, source, starts = sidecar_tracks(path)
+        if not names and not (single_name and total <= NAMED_SINGLE_MAX_SECONDS):
             names, source = archive_tracks(path)
         if names and len(names) < 2:
-            names, source = None, None
-        if names:
+            names, source, starts = None, None, None
+        if names and starts:
+            # Timestamps given: cut there, nudged to the nearest black/silent gap within a few seconds.
+            gaps = mvsplit.black_gaps(ffmpeg, path)
+            def snap(t):
+                near = [((g[0] + g[1]) / 2) for g in gaps if abs((g[0] + g[1]) / 2 - t) <= 4]
+                return min(near, key=lambda c: abs(c - t)) if near and t > 0 else t
+            cuts = [snap(t) for t in starts] + [total]
+            segments = [(cuts[i], cuts[i + 1]) for i in range(len(names))]
+            source += " (with timestamps)"
+        elif names:
             ch = mvsplit.chapters(ffprobe, path)
             if len(ch) == len(names):
                 segments = ch
@@ -279,8 +295,8 @@ def process(path, ffmpeg, ffprobe, key):
                     raise RuntimeError("found a {}-song list in {} but couldn't line it up with the video"
                                        .format(len(names), source))
 
-    # No list and short: one music video.
-    if not names and total <= SINGLE_MAX_SECONDS:
+    # No list: one music video (named "Artist - Song", or short enough to be one).
+    if not names and (total <= SINGLE_MAX_SECONDS or (single_name and total <= NAMED_SINGLE_MAX_SECONDS)):
         if single_name:
             shutil.copyfile(path, os.path.join(INBOX, name))
             log("   single music video, named in the file name")
@@ -298,8 +314,9 @@ def process(path, ffmpeg, ffprobe, key):
         log("   {} songs, track list from {}".format(len(names), source))
     else:
         if not key:
-            raise RuntimeError("no track list found (no matching text file, chapters or Internet Archive page), "
-                               "and identifying songs by sound isn't set up; see the top of mvauto.py")
+            raise RuntimeError("this looks like a compilation but there's no track list. Put a text file next to it "
+                               "with the same name ('{}.txt'), one 'Artist - Song' per line in order "
+                               "(timestamps like '3:45 Artist - Song' are fine too)".format(stem))
         segments = segments_without_list(mvsplit.black_gaps(ffmpeg, path), total)
         names = []
         for i, (a, b) in enumerate(segments, 1):

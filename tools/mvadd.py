@@ -143,7 +143,9 @@ class Library:
 
 
 def parse(stem):
-    m = NAME_RE.match(stem.replace("_", " ").strip())
+    # Downloaded names often carry "(Official Music Video)", "[HD]", "(Remastered 2009)" and so on.
+    stem = JUNK_RE.sub("", stem.replace("_", " ")).strip()
+    m = NAME_RE.match(stem)
     if not m:
         return None
     return {

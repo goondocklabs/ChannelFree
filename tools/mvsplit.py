@@ -43,7 +43,25 @@ def tool(name):
     sys.exit("{} isn't installed. Run:  brew install ffmpeg".format(name))
 
 
+STAMP_RE = re.compile(r"^\s*[\(\[]?(?P<ts>(?:\d{1,2}:)?\d{1,2}:\d{2})[\)\]]?\s*(?:[-\u2010-\u2015|.:]\s*)?")
+TRAILING_STAMP_RE = re.compile(r"\s*[\(\[]?(?:\d{1,2}:)?\d{1,2}:\d{2}[\)\]]?\s*$")
+
+
+def stamp_seconds(line):
+    """Seconds from a timestamp at the start of a track line ("3:45 Artist - Song", "1:02:10 - ..."), else None."""
+    m = STAMP_RE.match(line)
+    if not m:
+        return None
+    parts = [int(p) for p in m.group("ts").split(":")]
+    secs = 0
+    for p in parts:
+        secs = secs * 60 + p
+    return float(secs)
+
+
 def clean_track(line):
+    line = STAMP_RE.sub("", line, count=1)
+    line = TRAILING_STAMP_RE.sub("", line)
     m = TRACK_RE.match(line)
     if not m:
         return None
