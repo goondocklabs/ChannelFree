@@ -43,6 +43,9 @@ public class QuasiTvController : ControllerBase
         _host = host;
     }
 
+    /// <summary>Seconds of video sent in a quick burst when someone tunes in, so the player can start right away.</summary>
+    private const double TuneInBurstSeconds = 15;
+
     private static Configuration.PluginConfiguration Config => Plugin.Instance!.Configuration;
 
     private static bool TokenOk(string? token)
@@ -334,6 +337,7 @@ public class QuasiTvController : ControllerBase
         var useHw = Config.UseHardwareEncoding && System.IO.File.Exists(Config.VaapiDevice);
         var bumperBroken = false;
         var captionBroken = false;
+        var firstRun = true; // the first program after tuning in starts a little early and is sent in a quick burst
 
         try
         {
@@ -362,6 +366,18 @@ public class QuasiTvController : ControllerBase
                     await Task.Delay(remaining > TimeSpan.Zero ? remaining : TimeSpan.FromMilliseconds(50), ct).ConfigureAwait(false);
                     continue;
                 }
+
+                // Tuning in: players wait for several seconds of video before showing anything, and a live channel
+                // only makes video in real time. So start a few seconds back and send those seconds in one quick burst.
+                var lead = TimeSpan.Zero;
+                if (firstRun && !inBumper)
+                {
+                    lead = TimeSpan.FromSeconds(Math.Min(TuneInBurstSeconds, itemOffset.TotalSeconds));
+                    itemOffset -= lead;
+                    remaining += lead;
+                }
+
+                firstRun = false;
 
                 using var run = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 active.CurrentRun = run;
@@ -419,7 +435,7 @@ public class QuasiTvController : ControllerBase
                             }
 
                             _logger.LogInformation("QuasiTV: {Channel} playing {Title} from {Offset:hh\\:mm\\:ss}{Trim} ({Encoder})", channel.Name, slot.Item.Name, itemOffset, slot.Trimmed ? $", credits cut at {slot.Play:hh\\:mm\\:ss}" : string.Empty, useHw ? "vaapi" : "x264");
-                            await RunFfmpeg(slot.Item.Path, AudioMap(slot.Item), itemOffset, slot.Trimmed ? remaining : null, streamSeconds, useHw, banner, run.Token).ConfigureAwait(false);
+                            await RunFfmpeg(slot.Item.Path, AudioMap(slot.Item), itemOffset, slot.Trimmed ? remaining : null, streamSeconds, useHw, banner, lead.TotalSeconds, run.Token).ConfigureAwait(false);
                         }
                     }
                 }
@@ -433,7 +449,7 @@ public class QuasiTvController : ControllerBase
                 }
 
                 var ran = DateTime.UtcNow - started;
-                streamSeconds += ran.TotalSeconds;
+                streamSeconds += ran.TotalSeconds + (ran > lead ? lead.TotalSeconds : 0);
 
                 if (switched)
                 {
@@ -536,6 +552,7 @@ public class QuasiTvController : ControllerBase
         double streamSeconds = 0;
         var failures = 0;
         var turn = 0;
+        double lag = 0; // seconds the viewer runs behind after the tune-in burst
         Task<GuideAssets?>? next = null;
 
         Task<GuideAssets?> Build(DateTime atUtc)
@@ -578,8 +595,10 @@ public class QuasiTvController : ControllerBase
                 next = Build(end); // drawn while this run plays
 
                 var started = DateTime.UtcNow;
+                var burst = streamSeconds == 0 ? TuneInBurstSeconds : 0;
                 var args = HwInit(useHw);
-                var graph = GuideChannel.LiveArgs(assets, Path.Combine(workDir, "live" + (turn % 2).ToString(CultureInfo.InvariantCulture)), GuideChannel.LocalEpoch(started), out _);
+                var clockAt = started.AddSeconds(lag);
+                var graph = GuideChannel.LiveArgs(assets, Path.Combine(workDir, "live" + (turn % 2).ToString(CultureInfo.InvariantCulture)), GuideChannel.LocalEpoch(clockAt), burst, out _);
                 if (useHw)
                 {
                     var i = graph.IndexOf("-filter_complex");
@@ -587,12 +606,13 @@ public class QuasiTvController : ControllerBase
                 }
 
                 args.AddRange(graph);
-                args.AddRange(new[] { "-map", "[bv]", "-map", "[ba]", "-t", (end - started).TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) });
+                args.AddRange(new[] { "-map", "[bv]", "-map", "[ba]", "-t", ((end - started).TotalSeconds + burst).ToString("0.000", CultureInfo.InvariantCulture) });
                 args.AddRange(EncoderArgs(useHw, streamSeconds));
                 await Pump(args, ct).ConfigureAwait(false);
 
                 var ran = DateTime.UtcNow - started;
-                streamSeconds += ran.TotalSeconds;
+                streamSeconds += ran.TotalSeconds + burst;
+                lag += burst;
                 if (ran < TimeSpan.FromSeconds(3))
                 {
                     if (useHw)
@@ -657,7 +677,7 @@ public class QuasiTvController : ControllerBase
 
     /// <summary>Play one library item from <paramref name="offset"/>. If <paramref name="playFor"/> is set (credits cut short),
     /// stop there with a 1.5 s fade to black + audio fade.</summary>
-    private async Task RunFfmpeg(string path, string audioMap, TimeSpan offset, TimeSpan? playFor, double tsOffsetSeconds, bool useHw, string banner, CancellationToken ct)
+    private async Task RunFfmpeg(string path, string audioMap, TimeSpan offset, TimeSpan? playFor, double tsOffsetSeconds, bool useHw, string banner, double burstSeconds, CancellationToken ct)
     {
         var inv = CultureInfo.InvariantCulture;
         var maxH = Math.Clamp(Config.MaxHeight, 360, 1080);
@@ -682,9 +702,17 @@ public class QuasiTvController : ControllerBase
         }
 
         var args = HwInit(useHw);
+        if (burstSeconds > 0.5)
+        {
+            args.AddRange(new[] { "-readrate", "1", "-readrate_initial_burst", burstSeconds.ToString("0.000", inv) });
+        }
+        else
+        {
+            args.Add("-re");
+        }
+
         args.AddRange(new[]
         {
-            "-re",
             "-ss", offset.TotalSeconds.ToString("0.000", inv),
             "-i", path,
             "-map", "0:v:0", "-map", audioMap

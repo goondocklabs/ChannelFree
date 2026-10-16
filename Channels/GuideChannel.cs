@@ -353,7 +353,7 @@ public static class GuideChannel
     // ------------------------------------------------------------ the live picture
 
     /// <summary>ffmpeg inputs + filter graph for one run (output labels [bv] video, [ba] audio).</summary>
-    public static List<string> LiveArgs(GuideAssets assets, string workDir, long localEpoch, out bool hasMusic)
+    public static List<string> LiveArgs(GuideAssets assets, string workDir, long localEpoch, double burstSeconds, out bool hasMusic)
     {
         var fonts = Banner.FontDir() ?? string.Empty;
         var bold = Path.Combine(fonts, "DejaVuSans-Bold.ttf");
@@ -417,18 +417,23 @@ public static class GuideChannel
         File.WriteAllText(ampm, "%{pts:gmtime:" + localEpoch.ToString(Inv) + ":%p}", new UTF8Encoding(false));
         v.Append(Inv, $"[{last}]drawtext=fontfile={bold}:textfile={clock}:fontsize=96:fontcolor=white:x=1080-tw/2:y=140");
         v.Append(Inv, $",drawtext=fontfile={bold}:textfile={ampm}:fontsize=28:fontcolor=0xC8D2FF:x=1080-tw/2:y=244");
-        v.Append(",drawgrid=w=iw:h=3:t=1:c=black@0.16,realtime,format=yuv420p[bv];");
+        // Paced to real time, except the first few seconds after tuning in, which go out in one quick burst
+        // (their timestamps are held at 0 for the pacer, then put back).
+        var b = burstSeconds.ToString("0.000", Inv);
+        var pace = burstSeconds > 0.5 ? $"setpts='if(lt(T\\,{b})\\,0\\,PTS-{b}/TB)',realtime,setpts=N*1001/30000/TB" : "realtime";
+        var apace = burstSeconds > 0.5 ? $"asetpts='if(lt(T\\,{b})\\,0\\,PTS-{b}/TB)',arealtime,asetpts=N/SR/TB" : "arealtime";
+        v.Append(Inv, $",drawgrid=w=iw:h=3:t=1:c=black@0.16,{pace},format=yuv420p[bv];");
 
         var a = 2 + k;
         if (music is not null)
         {
             var vol = Math.Clamp(Config.GuideMusicVolumeDb, -40, 6).ToString(Inv);
             var fadeIn = builtIn ? "0.3" : "1.5";
-            v.Append(Inv, $"[{a}:a]volume={vol}dB,aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d={fadeIn},arealtime[ba]");
+            v.Append(Inv, $"[{a}:a]volume={vol}dB,aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d={fadeIn},{apace}[ba]");
         }
         else
         {
-            v.Append(Inv, $"[{a}:a]aformat=channel_layouts=stereo,arealtime[ba]");
+            v.Append(Inv, $"[{a}:a]aformat=channel_layouts=stereo,{apace}[ba]");
         }
 
         args.AddRange(new[] { "-filter_complex", v.ToString() });
