@@ -254,6 +254,10 @@
                             <h3>Music videos</h3>
                             <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="MusicVideoCaptions" /><span>MTV style caption (artist, song, year) near the start and end of each music video</span></label></div>
                             <div class="inputContainer"><input is="emby-input" type="number" id="MusicVideoNoRepeatHours" min="0" max="168" label="Don't repeat a music video on the same channel within (hours)" /></div>
+                            <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="PopupVideo" /><span>Pop-Up Video: trivia bubbles pop up during music videos (facts looked up on Wikipedia)</span></label></div>
+                            <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="PopupVideoSound" /><span>Play a "bloop" when each bubble pops up</span></label></div>
+                            <div class="inputContainer"><input is="emby-input" type="number" id="PopupVideoMaxPerVideo" min="1" max="12" label="Most bubbles per video" /></div>
+                            <p class="cf-hint">Write your own facts: put a text file next to a video with the same name plus <code>.popup.txt</code> (for example <code>Nirvana - Smells Like Teen Spirit (1991).popup.txt</code>), one fact per line. Your facts are used instead of Wikipedia's.</p>
 
                             <h3>Credits</h3>
                             <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="TrimCredits" /><span>Cut end credits short when a credits marker exists (Intro Skipper, or a "Credits" chapter)</span></label></div>
@@ -1279,6 +1283,9 @@
                         $('#DownArrowBanner').checked = config.DownArrowBanner;
                         $('#MusicVideoCaptions').checked = config.MusicVideoCaptions !== false;
                         $('#MusicVideoNoRepeatHours').value = config.MusicVideoNoRepeatHours == null ? 6 : config.MusicVideoNoRepeatHours;
+                        $('#PopupVideo').checked = !!config.PopupVideo;
+                        $('#PopupVideoSound').checked = config.PopupVideoSound !== false;
+                        $('#PopupVideoMaxPerVideo').value = config.PopupVideoMaxPerVideo || 5;
                         $('#GuideEnabled').checked = !!config.GuideEnabled;
                         $('#GuideNumber').value = config.GuideNumber || 1;
                         $('#GuideTitle').value = config.GuideTitle || '';
@@ -1322,6 +1329,9 @@
                         config.MusicVideoCaptions = $('#MusicVideoCaptions').checked;
                         var mvr = parseInt($('#MusicVideoNoRepeatHours').value, 10);
                         config.MusicVideoNoRepeatHours = isNaN(mvr) ? 6 : mvr;
+                        config.PopupVideo = $('#PopupVideo').checked;
+                        config.PopupVideoSound = $('#PopupVideoSound').checked;
+                        config.PopupVideoMaxPerVideo = parseInt($('#PopupVideoMaxPerVideo').value, 10) || 5;
                         config.DownArrowBanner = $('#DownArrowBanner').checked;
                         config.GuideEnabled = $('#GuideEnabled').checked;
                         config.GuideNumber = parseInt($('#GuideNumber').value, 10) || 1;

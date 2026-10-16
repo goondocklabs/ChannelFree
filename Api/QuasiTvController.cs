@@ -34,13 +34,15 @@ public class QuasiTvController : ControllerBase
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<QuasiTvController> _logger;
     private readonly IServerApplicationHost _host;
+    private readonly IHttpClientFactory _http;
 
-    public QuasiTvController(ILibraryManager library, IMediaEncoder mediaEncoder, ILogger<QuasiTvController> logger, IServerApplicationHost host)
+    public QuasiTvController(ILibraryManager library, IMediaEncoder mediaEncoder, ILogger<QuasiTvController> logger, IServerApplicationHost host, IHttpClientFactory http)
     {
         _library = library;
         _mediaEncoder = mediaEncoder;
         _logger = logger;
         _host = host;
+        _http = http;
     }
 
     /// <summary>Seconds of video sent in a quick burst when someone tunes in, so the player can start right away.</summary>
@@ -337,6 +339,7 @@ public class QuasiTvController : ControllerBase
         var useHw = Config.UseHardwareEncoding && System.IO.File.Exists(Config.VaapiDevice);
         var bumperBroken = false;
         var captionBroken = false;
+        var popupBroken = false;
         var firstRun = true; // the first program after tuning in starts a little early and is sent in a quick burst
 
         try
@@ -385,6 +388,7 @@ public class QuasiTvController : ControllerBase
                 var started = DateTime.UtcNow;
                 var banner = string.Empty;
                 var bumperRun = false;
+                List<double>? pops = null;
 
                 try
                 {
@@ -434,8 +438,28 @@ public class QuasiTvController : ControllerBase
                                 }
                             }
 
+                            if (slot.Item is MusicVideo && Config.PopupVideo && !popupBroken)
+                            {
+                                try
+                                {
+                                    var facts = await PopupVideo.FactsAsync(slot.Item, _http, _logger, TimeSpan.FromSeconds(2.5), run.Token).ConfigureAwait(false);
+                                    var (popFilter, popTimes) = PopupVideo.Build(facts, itemOffset, slot.Play, Path.Combine(workDir, "popup"));
+                                    banner += popFilter;
+                                    pops = Config.PopupVideoSound && popTimes.Count > 0 ? popTimes : null;
+
+                                    // Look up the next few videos while this one plays.
+                                    var soon = ChannelScheduler.Slots(channel, now, now.AddMinutes(20)).Select(s => s.Item)
+                                        .Where(i => i is MusicVideo && i.Id != slot.Item.Id).Take(4).ToList();
+                                    PopupVideo.Prefetch(soon, _http, _logger);
+                                }
+                                catch (Exception ex) when (ex is not OperationCanceledException)
+                                {
+                                    _logger.LogWarning(ex, "QuasiTV: Pop-Up Video bubbles failed; playing without them");
+                                }
+                            }
+
                             _logger.LogInformation("QuasiTV: {Channel} playing {Title} from {Offset:hh\\:mm\\:ss}{Trim} ({Encoder})", channel.Name, slot.Item.Name, itemOffset, slot.Trimmed ? $", credits cut at {slot.Play:hh\\:mm\\:ss}" : string.Empty, useHw ? "vaapi" : "x264");
-                            await RunFfmpeg(slot.Item.Path, AudioMap(slot.Item), itemOffset, slot.Trimmed ? remaining : null, streamSeconds, useHw, banner, lead.TotalSeconds, run.Token).ConfigureAwait(false);
+                            await RunFfmpeg(slot.Item.Path, AudioMap(slot.Item), itemOffset, slot.Trimmed ? remaining : null, streamSeconds, useHw, banner, lead.TotalSeconds, pops, run.Token).ConfigureAwait(false);
                         }
                     }
                 }
@@ -471,6 +495,7 @@ public class QuasiTvController : ControllerBase
                     if (banner.Length > 0)
                     {
                         captionBroken |= slot.Item is MusicVideo;
+                        popupBroken |= slot.Item is MusicVideo;
                         _logger.LogWarning("QuasiTV: stream with info banner failed on {Title}; retrying without the banner", slot.Item.Name);
                         continue; // showBanner is already false
                     }
@@ -677,7 +702,7 @@ public class QuasiTvController : ControllerBase
 
     /// <summary>Play one library item from <paramref name="offset"/>. If <paramref name="playFor"/> is set (credits cut short),
     /// stop there with a 1.5 s fade to black + audio fade.</summary>
-    private async Task RunFfmpeg(string path, string audioMap, TimeSpan offset, TimeSpan? playFor, double tsOffsetSeconds, bool useHw, string banner, double burstSeconds, CancellationToken ct)
+    private async Task RunFfmpeg(string path, string audioMap, TimeSpan offset, TimeSpan? playFor, double tsOffsetSeconds, bool useHw, string banner, double burstSeconds, IReadOnlyList<double>? pops, CancellationToken ct)
     {
         var inv = CultureInfo.InvariantCulture;
         var maxH = Math.Clamp(Config.MaxHeight, 360, 1080);
@@ -711,22 +736,52 @@ public class QuasiTvController : ControllerBase
             args.Add("-re");
         }
 
-        args.AddRange(new[]
+        args.AddRange(new[] { "-ss", offset.TotalSeconds.ToString("0.000", inv), "-i", path });
+
+        // Pop-Up Video "bloops": a second input, mixed in under the video's own sound at each bubble.
+        var bloop = pops is { Count: > 0 } ? PopupVideo.Sound() : null;
+        if (bloop is not null)
         {
-            "-ss", offset.TotalSeconds.ToString("0.000", inv),
-            "-i", path,
-            "-map", "0:v:0", "-map", audioMap
-        });
+            args.AddRange(new[] { "-i", bloop });
+        }
 
         if (playFor is TimeSpan t && t > TimeSpan.Zero)
         {
             args.AddRange(new[] { "-t", t.TotalSeconds.ToString("0.000", inv) });
         }
 
-        args.AddRange(new[] { "-vf", useHw ? vf + ",format=nv12,hwupload" : vf });
-        if (af.Length > 0)
+        if (bloop is null)
         {
-            args.AddRange(new[] { "-af", af });
+            args.AddRange(new[] { "-map", "0:v:0", "-map", audioMap });
+            args.AddRange(new[] { "-vf", useHw ? vf + ",format=nv12,hwupload" : vf });
+            if (af.Length > 0)
+            {
+                args.AddRange(new[] { "-af", af });
+            }
+        }
+        else
+        {
+            var n = pops!.Count;
+            var fc = new StringBuilder();
+            fc.Append(inv, $"[0:v:0]{(useHw ? vf + ",format=nv12,hwupload" : vf)}[pv];");
+            fc.Append(inv, $"[{audioMap.TrimEnd('?')}]{(af.Length > 0 ? af : "anull")},aresample=48000,aformat=channel_layouts=stereo[pm];");
+            fc.Append(inv, $"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume=0.4,asplit={n}");
+            for (var i = 0; i < n; i++)
+            {
+                fc.Append(inv, $"[ps{i}]");
+            }
+
+            fc.Append(';');
+            var mixIn = new StringBuilder("[pm]");
+            for (var i = 0; i < n; i++)
+            {
+                var ms = Math.Max(0, (int)Math.Round(pops[i] * 1000));
+                fc.Append(inv, $"[ps{i}]adelay={ms}:all=1[pd{i}];");
+                mixIn.Append(inv, $"[pd{i}]");
+            }
+
+            fc.Append(inv, $"{mixIn}amix=inputs={n + 1}:duration=first:normalize=0[pa]");
+            args.AddRange(new[] { "-filter_complex", fc.ToString(), "-map", "[pv]", "-map", "[pa]" });
         }
 
         args.AddRange(EncoderArgs(useHw, tsOffsetSeconds));

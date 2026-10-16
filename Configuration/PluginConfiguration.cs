@@ -118,6 +118,15 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>MTV-style artist / song / year caption in the lower left near the start and end of each music video.</summary>
     public bool MusicVideoCaptions { get; set; } = true;
 
+    /// <summary>VH1 Pop-Up Video style trivia bubbles during music videos (facts from Wikipedia or a .popup.txt next to the video).</summary>
+    public bool PopupVideo { get; set; } = false;
+
+    /// <summary>Play a "bloop" when each bubble pops up.</summary>
+    public bool PopupVideoSound { get; set; } = true;
+
+    /// <summary>Most bubbles in one music video.</summary>
+    public int PopupVideoMaxPerVideo { get; set; } = 5;
+
     /// <summary>A music video won't air again on the same channel within this many hours (when the channel has enough to pick from).</summary>
     public int MusicVideoNoRepeatHours { get; set; } = 6;
 }
