@@ -15,6 +15,7 @@ then run this script (or double-click "Add Music Videos.command"). For each file
   2. looks up a missing year on MusicBrainz
   3. writes those tags into the video and an .nfo file Jellyfin reads
   4. copies the finished file to the NAS as  Music Videos/Artist/Artist - Song (Year).mp4
+     (plus Pop-Up Video facts next to it, if ~/.anthropic_key exists; see mvpopup.py)
   5. moves the original into the Inbox's _Processed folder
 and finally tells Jellyfin to scan for the new videos.
 
@@ -440,6 +441,19 @@ def main():
             attention.append((name, reason))
             move_aside(src, args.inbox, ATTENTION, reason)
             continue
+
+        # Pop-Up Video facts (needs ~/.anthropic_key; never holds up adding the video).
+        try:
+            import mvpopup
+            if mvpopup.api_key():
+                bubbles = mvpopup.facts_for(info["artist"], info["title"], info["year"])
+                local_pop = os.path.join(stage_dir, out_stem + ".popup.txt")
+                mvpopup.write_popup(local_pop, bubbles, info["artist"], info["title"])
+                copy_to_nas(local_pop, os.path.join(artist_dir, out_stem + ".popup.txt"))
+                os.remove(local_pop)
+                print("    pop-up facts: {}".format(len(bubbles) or "none found"))
+        except Exception as e:
+            print("    pop-up facts skipped ({})".format(e))
 
         for done in (local_mp4, local_nfo):
             os.remove(done)
