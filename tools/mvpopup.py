@@ -37,7 +37,7 @@ BUBBLES = 8                     # how many to ask for (Channel Free shows up to 
 # ---------------------------------------------------------------- end of settings
 
 VIDEO_EXTS = {".mp4", ".m4v", ".mov", ".mkv", ".avi", ".mpg", ".mpeg", ".ts", ".webm"}
-UA = "ChannelFree-mvpopup/1.0 (github.com/goondocklabs/ChannelFree)"
+UA = "ChannelFree-mvpopup/1.1 (https://github.com/goondocklabs/ChannelFree; personal music video library tool)"
 WIKI = "https://en.wikipedia.org/w/api.php"
 GOOD_SECTIONS = re.compile(r"music video|video|background|recording|writing|composition|production|"
                            r"release|reception|commercial|chart|legacy|in popular culture|live", re.I)
@@ -78,15 +78,31 @@ def plain_song(title):
     return s or title
 
 
+_last_wiki = [0.0]
+
+
 def http_json(url, data=None, headers=None, tries=3):
+    wiki = "wikipedia.org" in url
+    if wiki:
+        tries = 6
     for attempt in range(tries):
+        if wiki:
+            # Wikipedia asks scripts to go easy: at most about one request a second.
+            wait = _last_wiki[0] + 1.2 - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            _last_wiki[0] = time.time()
         try:
             req = urllib.request.Request(url, data=data, headers=dict({"User-Agent": UA}, **(headers or {})))
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 529) and attempt < tries - 1:
-                time.sleep(3 * (attempt + 1))
+                try:
+                    pause = float(e.headers.get("Retry-After") or 0)
+                except ValueError:
+                    pause = 0
+                time.sleep(max(pause, 10 * (attempt + 1) if e.code == 429 else 3 * (attempt + 1)))
                 continue
             detail = ""
             try:
