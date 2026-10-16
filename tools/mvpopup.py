@@ -86,7 +86,14 @@ def http_json(url, data=None, headers=None, tries=3):
             if e.code in (429, 500, 502, 503, 529) and attempt < tries - 1:
                 time.sleep(3 * (attempt + 1))
                 continue
-            raise
+            detail = ""
+            try:
+                detail = json.loads(e.read().decode("utf-8")).get("error", {}).get("message", "")
+            except Exception:
+                pass
+            hint = {401: " (the API key in {} isn't accepted: check it was pasted whole, or make a new one)".format(API_KEY_FILE),
+                    400: "", 403: " (this key isn't allowed to do that)"}.get(e.code, "")
+            raise RuntimeError("HTTP {} from {}: {}{}".format(e.code, urllib.parse.urlparse(url).netloc, detail or e.reason, hint)) from None
         except (urllib.error.URLError, TimeoutError):
             if attempt < tries - 1:
                 time.sleep(3 * (attempt + 1))
@@ -245,6 +252,8 @@ def backfill(library, limit=None):
         try:
             bubbles = facts_for(artist, song, year, log=lambda s: None)
         except Exception as e:  # network trouble: leave it for the next run
+            if "HTTP 401" in str(e) or "HTTP 403" in str(e) or "credit balance" in str(e).lower():
+                sys.exit(str(e))
             print("[{}/{}] {}: failed ({}), will retry next run".format(i, len(todo), name, e))
             failed += 1
             continue
@@ -270,8 +279,16 @@ def main():
     ap.add_argument("--show", nargs=2, metavar=("ARTIST", "SONG"), help="print the bubbles for one song without saving")
     args = ap.parse_args()
     if args.show:
-        for b in facts_for(args.show[0], args.show[1], ""):
+        try:
+            bubbles = facts_for(args.show[0], args.show[1], "")
+        except RuntimeError as e:
+            sys.exit(str(e))
+        if not api_key():
+            sys.exit("No API key yet: put it in {} (one line).".format(API_KEY_FILE))
+        for b in bubbles:
             print("* " + b)
+        if not bubbles:
+            print("No bubbles (nothing usable on Wikipedia for that song).")
     elif args.backfill:
         backfill(args.library, args.limit)
     else:
