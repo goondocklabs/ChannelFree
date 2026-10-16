@@ -358,22 +358,35 @@ def main():
     library = Library(args.library)
     added, attention, looked_up, merged, fixed = [], [], [], [], []
     # First pass: names and years for everything, so missing years can borrow from the rest of the batch.
-    infos, guessed = {}, []
+    infos, guessed, disagree = {}, [], []
     for name in files:
         info = parse(os.path.splitext(name)[0])
         infos[name] = info
         if info and not info["year"] and LOOKUP_MISSING_YEARS and not args.no_lookup:
             print("Looking up the year for " + name)
-            year, fix, tfix = lookup(info["artist"], info["title"])
-            if year:
-                info["year"] = year
-                looked_up.append("{} - {} ({})".format(info["artist"], info["title"], year))
+            year, fix, tfix = lookup(info["artist"], info["title"])   # MusicBrainz (also fixes spelling)
             if fix:
                 fixed.append("{} -> {}".format(info["artist"], fix))
                 info["artist"] = fix
             if tfix:
                 fixed.append("{} -> {}".format(info["title"], tfix))
                 info["title"] = tfix
+            # Wikipedia's "released on ... 1991" is the original single, where MusicBrainz's earliest
+            # release is sometimes a later reissue; prefer Wikipedia when it has one.
+            wyear = None
+            try:
+                import mvpopup
+                wyear = mvpopup.wiki_song_year(info["artist"], info["title"])
+            except Exception:
+                pass
+            if wyear and year and abs(int(wyear) - int(year)) > 1:
+                disagree.append("{} - {}: Wikipedia says {}, MusicBrainz {} (used {})".format(
+                    info["artist"], info["title"], wyear, year, wyear))
+            year = wyear or year
+            if year:
+                info["year"] = year
+                looked_up.append("{} - {} ({}{})".format(info["artist"], info["title"], year,
+                                                        ", Wikipedia" if wyear else ", MusicBrainz"))
     known = sorted(int(v["year"]) for v in infos.values() if v and v["year"])
     if len(known) >= 3 and known[-1] - known[0] <= 12:
         typical = str(known[len(known) // 2])
@@ -488,6 +501,10 @@ def main():
     if looked_up:
         print("Years looked up online (worth a glance):")
         for s in looked_up:
+            print("  " + s)
+    if disagree:
+        print("Sources disagreed on these years (Wikipedia's was used; rename the file if it's wrong):")
+        for s in disagree:
             print("  " + s)
     if attention:
         print("Needs attention ({}), moved to '{}':".format(len(attention), ATTENTION))

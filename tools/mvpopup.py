@@ -187,6 +187,27 @@ def song_sources(artist, song):
     return None, ""
 
 
+ALBUM_YEAR = re.compile(r"\b(?:album|single|EP|soundtrack)\b[^.]{0,80}?\(((?:19[5-9]|20[0-4])\d)\)", re.I)
+YEAR_AFTER_RELEASED = re.compile(r"\breleased\b[^.]{0,120}?\b((?:19[5-9]|20[0-4])\d)\b", re.I)
+
+
+def wiki_song_year(artist, song):
+    """Original release year from the song's Wikipedia intro ("...was released on September 10, 1991..."), or None."""
+    want = key(plain_song(song))
+    for title in wiki_search("{} {} song".format(plain_song(song), artist))[:4]:
+        if want not in key(title):
+            continue
+        intro = wiki_text(title, intro_only=True)
+        if not mentions(intro, ["song", "single", "track", "ballad"]):
+            continue
+        # The artist should be named in the opening too (lots of songs share a title).
+        if not any(key(part) and key(part) in key(intro[:600]) for part in re.split(r"\s*(?:,|&|\bfeat\.?|\bft\.?|\band\b|\bwith\b)\s*", artist, flags=re.I)):
+            continue
+        m = YEAR_AFTER_RELEASED.search(intro) or ALBUM_YEAR.search(intro[:500])
+        return m.group(1) if m else None
+    return None
+
+
 def artist_sources(artist):
     want = key(artist)
     for title in wiki_search("{} band singer musician".format(artist))[:4]:
