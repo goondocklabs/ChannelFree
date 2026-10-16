@@ -236,6 +236,15 @@
                             <div class="inputContainer"><input is="emby-input" type="number" id="VideoBitrateKbps" min="500" max="20000" label="Channel video bitrate (kbps)" /></div>
                             <div class="inputContainer"><input is="emby-input" type="text" id="PreferredAudioLanguages" label="Preferred audio languages (e.g. eng,en — used when a file has several audio tracks)" /></div>
 
+                            <h3 id="CfGuideSettings">Guide channel</h3>
+                            <p class="cf-hint">An extra channel that works like the old Prevue Channel: a grid of what's on every channel scrolls by on its own, "Up next" art plays in the top half, and a clock ticks in the corner. Flip to it any time to see what's on.</p>
+                            <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="GuideEnabled" /><span>Add a guide channel</span></label></div>
+                            <div class="inputContainer"><input is="emby-input" type="number" id="GuideNumber" min="1" max="9999" label="Guide channel number" /></div>
+                            <div class="inputContainer"><input is="emby-input" type="text" id="GuideTitle" maxlength="20" label="Name at the top of the guide (leave empty to use your server's name)" /></div>
+                            <div class="selectContainer"><select is="emby-select" id="GuideScrollSpeed" label="Scroll speed"><option value="slow">Slow</option><option value="normal">Normal</option><option value="fast">Fast</option></select></div>
+                            <div class="inputContainer"><input is="emby-input" type="text" id="GuideMusicFolder" label="Background music folder (as Jellyfin sees it, e.g. /media/Guide Music; leave empty for silence)" /></div>
+                            <div class="inputContainer"><input is="emby-input" type="number" id="GuideMusicVolumeDb" min="-40" max="6" label="Music volume (dB, negative = quieter)" /></div>
+
                             <h3>Info banner</h3>
                             <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="ShowBanner" /><span>Show the info banner (channel, title, progress) when tuning in</span></label></div>
                             <div class="inputContainer"><input is="emby-input" type="number" id="BannerSeconds" min="1" max="30" label="Banner length (seconds)" /></div>
@@ -458,9 +467,16 @@
                     $('#QuasiListView').style.display = '';
                     $('#QuasiDetailView').style.display = 'none';
                     current = null;
-                    getJson('channels').then(function (list) {
+                    Promise.all([getJson('channels'), ApiClient.getPluginConfiguration(pluginId)]).then(function (res) {
+                        var list = res[0], cfg = res[1] || {};
                         listCache = list;
-                        var html = GROUPS.map(function (g) {
+                        var guide = '<div class="cf-row cf-guide-row' + (cfg.GuideEnabled ? '' : ' off') + '" data-guide="1" title="Built in. Settings are under Setup &amp; settings → Guide channel">' +
+                            '<span class="cf-num cf-acc">' + (cfg.GuideNumber || 1) + '</span>' +
+                            '<div class="cf-main"><div class="cf-name">Guide <span class="cf-hint" style="margin:0;">built in</span></div>' +
+                            '<div class="cf-sub">Scrolling grid of what\'s on every channel, Prevue style</div></div>' +
+                            '<label class="cf-switch" title="On air"><input type="checkbox" data-act="guide-toggle"' + (cfg.GuideEnabled ? ' checked' : '') + ' /><i></i></label>' +
+                            '<span class="cf-chev">›</span></div>';
+                        var html = guide + GROUPS.map(function (g) {
                             var rows = list.filter(function (c) { return g.kinds.indexOf(c.kind) >= 0; });
                             if (!rows.length) { return ''; }
                             var on = rows.filter(function (c) { return c.enabled; }).length;
@@ -474,9 +490,26 @@
                 $('#QuasiChannelList').addEventListener('click', function (e) {
                     var r = e.target.closest('.cf-row');
                     if (!r || e.target.closest('.cf-switch')) { return; }
+                    if (r.getAttribute('data-guide')) {
+                        $('.cf-settings').open = true;
+                        $('#CfGuideSettings').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        return;
+                    }
                     loadDetail(r.getAttribute('data-key'));
                 });
                 $('#QuasiChannelList').addEventListener('change', function (e) {
+                    if (e.target.getAttribute('data-act') === 'guide-toggle') {
+                        var gr = e.target.closest('.cf-row'), gon = e.target.checked;
+                        ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                            config.GuideEnabled = gon;
+                            return ApiClient.updatePluginConfiguration(pluginId, config);
+                        }).then(function () {
+                            gr.classList.toggle('off', !gon);
+                            $('#GuideEnabled').checked = gon;
+                            toast(gon ? 'Guide channel on — Live TV updates shortly' : 'Guide channel off');
+                        });
+                        return;
+                    }
                     if (e.target.getAttribute('data-act') !== 'toggle') { return; }
                     var r = e.target.closest('.cf-row'), on = e.target.checked;
                     send('POST', 'channels/' + r.getAttribute('data-key') + '/settings', { Enabled: on }).then(function () {
@@ -1245,6 +1278,12 @@
                         $('#DownArrowBanner').checked = config.DownArrowBanner;
                         $('#MusicVideoCaptions').checked = config.MusicVideoCaptions !== false;
                         $('#MusicVideoNoRepeatHours').value = config.MusicVideoNoRepeatHours == null ? 6 : config.MusicVideoNoRepeatHours;
+                        $('#GuideEnabled').checked = !!config.GuideEnabled;
+                        $('#GuideNumber').value = config.GuideNumber || 1;
+                        $('#GuideTitle').value = config.GuideTitle || '';
+                        $('#GuideScrollSpeed').value = config.GuideScrollSpeed || 'normal';
+                        $('#GuideMusicFolder').value = config.GuideMusicFolder || '';
+                        $('#GuideMusicVolumeDb').value = config.GuideMusicVolumeDb == null ? -10 : config.GuideMusicVolumeDb;
                         showUrls(config);
                         Dashboard.hideLoadingMsg();
                     });
@@ -1282,6 +1321,13 @@
                         var mvr = parseInt($('#MusicVideoNoRepeatHours').value, 10);
                         config.MusicVideoNoRepeatHours = isNaN(mvr) ? 6 : mvr;
                         config.DownArrowBanner = $('#DownArrowBanner').checked;
+                        config.GuideEnabled = $('#GuideEnabled').checked;
+                        config.GuideNumber = parseInt($('#GuideNumber').value, 10) || 1;
+                        config.GuideTitle = $('#GuideTitle').value.trim();
+                        config.GuideScrollSpeed = $('#GuideScrollSpeed').value || 'normal';
+                        config.GuideMusicFolder = $('#GuideMusicFolder').value.trim();
+                        var gv = parseInt($('#GuideMusicVolumeDb').value, 10);
+                        config.GuideMusicVolumeDb = isNaN(gv) ? -10 : gv;
                         ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                             showUrls(config);
                             Dashboard.processPluginConfigurationUpdateResult(result);

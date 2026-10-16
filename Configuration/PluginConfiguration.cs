@@ -31,6 +31,24 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Record on the program that's on now restarts it from the beginning.</summary>
     public bool AllowRestart { get; set; } = true;
 
+    /// <summary>Add a Prevue style guide channel (scrolling grid of what's on every channel).</summary>
+    public bool GuideEnabled { get; set; } = false;
+
+    /// <summary>Channel number of the guide channel.</summary>
+    public int GuideNumber { get; set; } = 1;
+
+    /// <summary>Big name at the top of the guide (empty = the Jellyfin server name).</summary>
+    public string GuideTitle { get; set; } = string.Empty;
+
+    /// <summary>Grid scroll speed: slow, normal or fast.</summary>
+    public string GuideScrollSpeed { get; set; } = "normal";
+
+    /// <summary>Folder of music to play under the guide (as Jellyfin sees it, e.g. /media/Guide Music). Empty = silent.</summary>
+    public string GuideMusicFolder { get; set; } = string.Empty;
+
+    /// <summary>Guide music volume in dB (negative = quieter).</summary>
+    public int GuideMusicVolumeDb { get; set; } = -10;
+
     /// <summary>Per-channel schedule shifts created by Restart / Skip.</summary>
     public List<ChannelShift> Shifts { get; set; } = new();
 

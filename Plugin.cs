@@ -50,16 +50,28 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
         // Turning the web/LG down-arrow banner on or off takes effect right away.
         var webPath = applicationPaths.WebPath;
+        var guideSetup = GuideSetup(Configuration);
         ConfigurationChanged += (_, cfg) =>
         {
             if (cfg is PluginConfiguration c)
             {
                 Channels.Startup.Apply(webPath, c.DownArrowBanner, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+
+                // Guide channel switched on/off or renumbered: Jellyfin has to re-read the channel list.
+                var setup = GuideSetup(c);
+                if (!string.Equals(setup, guideSetup, StringComparison.Ordinal))
+                {
+                    guideSetup = setup;
+                    Channels.GuideRefresher.Request();
+                }
             }
         };
     }
 
     public static Plugin? Instance { get; private set; }
+
+    private static string GuideSetup(PluginConfiguration c)
+        => string.Format(CultureInfo.InvariantCulture, "{0}|{1}", c.GuideEnabled, c.GuideNumber);
 
     public override string Name => "Channel Free";
 

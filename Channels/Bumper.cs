@@ -151,7 +151,7 @@ public static class Bumper
         return args;
     }
 
-    private static string? Backdrop(BaseItem item)
+    internal static string? Backdrop(BaseItem item)
     {
         var owner = item is Episode ep && ep.Series is not null ? (BaseItem)ep.Series : item;
         foreach (var candidate in new[] { owner, item })

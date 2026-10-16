@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Xml;
 using Jellyfin.Plugin.QuasiTV.Channels;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
@@ -32,12 +33,14 @@ public class QuasiTvController : ControllerBase
     private readonly ILibraryManager _library;
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<QuasiTvController> _logger;
+    private readonly IServerApplicationHost _host;
 
-    public QuasiTvController(ILibraryManager library, IMediaEncoder mediaEncoder, ILogger<QuasiTvController> logger)
+    public QuasiTvController(ILibraryManager library, IMediaEncoder mediaEncoder, ILogger<QuasiTvController> logger, IServerApplicationHost host)
     {
         _library = library;
         _mediaEncoder = mediaEncoder;
         _logger = logger;
+        _host = host;
     }
 
     private static Configuration.PluginConfiguration Config => Plugin.Instance!.Configuration;
@@ -57,6 +60,13 @@ public class QuasiTvController : ControllerBase
 
         var baseUrl = Config.InternalUrl.TrimEnd('/');
         var sb = new StringBuilder("#EXTM3U\n");
+        if (GuideChannel.Enabled)
+        {
+            sb.Append(CultureInfo.InvariantCulture,
+                $"#EXTINF:-1 tvg-id=\"{GuideChannel.Id}\" tvg-chno=\"{GuideChannel.Number}\" tvg-name=\"{GuideChannel.Name}\" group-title=\"Channel Free\",{GuideChannel.Name}\n");
+            sb.Append(CultureInfo.InvariantCulture, $"{baseUrl}/QuasiTV/stream/{GuideChannel.Id}?token={Config.StreamToken}\n");
+        }
+
         foreach (var ch in ChannelScheduler.GetChannels(_library))
         {
             sb.Append(CultureInfo.InvariantCulture,
@@ -89,6 +99,29 @@ public class QuasiTvController : ControllerBase
             w.WriteAttributeString("generator-info-name", "Channel Free");
 
             var channels = ChannelScheduler.GetChannels(_library);
+            if (GuideChannel.Enabled)
+            {
+                w.WriteStartElement("channel");
+                w.WriteAttributeString("id", GuideChannel.Id);
+                w.WriteElementString("display-name", GuideChannel.Name);
+                w.WriteElementString("display-name", GuideChannel.Number.ToString(CultureInfo.InvariantCulture));
+                w.WriteEndElement();
+
+                // Half hour blocks, like the real thing.
+                var block = new DateTime(from.Ticks - (from.Ticks % TimeSpan.FromMinutes(30).Ticks), DateTimeKind.Utc);
+                while (block < until)
+                {
+                    w.WriteStartElement("programme");
+                    w.WriteAttributeString("start", XmlTvTime(block));
+                    w.WriteAttributeString("stop", XmlTvTime(block.AddMinutes(30)));
+                    w.WriteAttributeString("channel", GuideChannel.Id);
+                    w.WriteElementString("title", "Channel Guide");
+                    w.WriteElementString("desc", "What's on every channel right now and coming up next.");
+                    w.WriteEndElement();
+                    block = block.AddMinutes(30);
+                }
+            }
+
             foreach (var ch in channels)
             {
                 w.WriteStartElement("channel");
@@ -253,6 +286,18 @@ public class QuasiTvController : ControllerBase
         if (!TokenOk(token))
         {
             Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+
+        if (string.Equals(channelId, GuideChannel.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!GuideChannel.Enabled)
+            {
+                Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            await StreamGuide().ConfigureAwait(false);
             return;
         }
 
@@ -469,6 +514,145 @@ public class QuasiTvController : ControllerBase
         }
 
         _logger.LogInformation("QuasiTV: stream for {Channel} ended", channel.Name);
+    }
+
+    /// <summary>The guide channel: draw the stills for a run, play them (scrolling grid, rotating "Up next", live clock)
+    /// until the next half hour (or 10 minutes), while the next run's stills are drawn in the background.</summary>
+    private async Task StreamGuide()
+    {
+        var active = StreamRegistry.Take(GuideChannel.Id);
+        using var session = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted, active.Replaced);
+        var ct = session.Token;
+
+        HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        Response.StatusCode = StatusCodes.Status200OK;
+        Response.ContentType = "video/mp2t";
+        await Response.StartAsync(ct).ConfigureAwait(false);
+        _logger.LogInformation("QuasiTV: tuned in to the guide channel");
+
+        var workDir = Path.Combine(Path.GetTempPath(), "cablepackage", "guide-" + Guid.NewGuid().ToString("N"));
+        var title = string.IsNullOrWhiteSpace(Config.GuideTitle) ? (_host.FriendlyName ?? "Channel Free") : Config.GuideTitle.Trim();
+        var useHw = Config.UseHardwareEncoding && System.IO.File.Exists(Config.VaapiDevice);
+        double streamSeconds = 0;
+        var failures = 0;
+        var turn = 0;
+        Task<GuideAssets?>? next = null;
+
+        Task<GuideAssets?> Build(DateTime atUtc)
+        {
+            var dir = Path.Combine(workDir, (turn++ % 2 == 0) ? "a" : "b");
+            return GuideChannel.BuildAsync(_library, _mediaEncoder.EncoderPath, atUtc, title, dir, _logger, ct);
+        }
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var now = DateTime.UtcNow;
+                GuideAssets? assets;
+                try
+                {
+                    assets = await (next ?? Build(now)).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "QuasiTV: drawing the guide failed");
+                    assets = null;
+                }
+
+                next = null;
+                if (assets is null)
+                {
+                    if (++failures >= 5)
+                    {
+                        _logger.LogWarning("QuasiTV: the guide channel keeps failing to draw; stopping its stream");
+                        break;
+                    }
+
+                    await Task.Delay(3000, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                now = DateTime.UtcNow;
+                var end = GuideChannel.RunEnd(now);
+                next = Build(end); // drawn while this run plays
+
+                var started = DateTime.UtcNow;
+                var args = HwInit(useHw);
+                var graph = GuideChannel.LiveArgs(assets, Path.Combine(workDir, "live" + (turn % 2).ToString(CultureInfo.InvariantCulture)), GuideChannel.LocalEpoch(started), out _);
+                if (useHw)
+                {
+                    var i = graph.IndexOf("-filter_complex");
+                    graph[i + 1] = graph[i + 1].Replace("format=yuv420p[bv]", "format=nv12,hwupload[bv]", StringComparison.Ordinal);
+                }
+
+                args.AddRange(graph);
+                args.AddRange(new[] { "-map", "[bv]", "-map", "[ba]", "-t", (end - started).TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture) });
+                args.AddRange(EncoderArgs(useHw, streamSeconds));
+                await Pump(args, ct).ConfigureAwait(false);
+
+                var ran = DateTime.UtcNow - started;
+                streamSeconds += ran.TotalSeconds;
+                if (ran < TimeSpan.FromSeconds(3))
+                {
+                    if (useHw)
+                    {
+                        _logger.LogWarning("QuasiTV: hardware encode failed on the guide channel; using software");
+                        useHw = false;
+                    }
+                    else if (++failures >= 5)
+                    {
+                        _logger.LogWarning("QuasiTV: the guide channel keeps failing; stopping its stream");
+                        break;
+                    }
+
+                    await Task.Delay(1000, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    failures = 0;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // viewer left, or a newer tune-in replaced this stream
+        }
+        catch (IOException)
+        {
+            // viewer left mid-write
+        }
+        finally
+        {
+            if (next is not null)
+            {
+                try
+                {
+                    await next.ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // cancelled with the stream
+                }
+            }
+
+            try
+            {
+                if (Directory.Exists(workDir))
+                {
+                    Directory.Delete(workDir, true);
+                }
+            }
+            catch (IOException)
+            {
+                // temp files; not important
+            }
+
+            StreamRegistry.Release(GuideChannel.Id, active);
+            active.Dispose();
+        }
+
+        _logger.LogInformation("QuasiTV: guide channel stream ended");
     }
 
     /// <summary>Play one library item from <paramref name="offset"/>. If <paramref name="playFor"/> is set (credits cut short),
