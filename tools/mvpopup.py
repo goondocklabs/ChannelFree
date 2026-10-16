@@ -30,6 +30,8 @@ from xml.etree import ElementTree
 # ---------------------------------------------------------------- settings
 LIBRARY = "/Volumes/Media/Music Videos"
 API_KEY_FILE = os.path.expanduser("~/.anthropic_key")
+# ...or a plain text file named anthropic-key.txt right in this folder (whichever exists).
+LOCAL_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anthropic-key.txt")
 MODEL = "claude-haiku-5-5"      # cheap and quick; "claude-sonnet-5-5" writes punchier jokes for about 20x the price
 BUBBLES = 8                     # how many to ask for (Channel Free shows up to its own per-video limit)
 # ---------------------------------------------------------------- end of settings
@@ -91,7 +93,7 @@ def http_json(url, data=None, headers=None, tries=3):
                 detail = json.loads(e.read().decode("utf-8")).get("error", {}).get("message", "")
             except Exception:
                 pass
-            hint = {401: " (the API key in {} isn't accepted: check it was pasted whole, or make a new one)".format(API_KEY_FILE),
+            hint = {401: " (the API key isn't accepted: check anthropic-key.txt has just the key, pasted whole)",
                     400: "", 403: " (this key isn't allowed to do that)"}.get(e.code, "")
             raise RuntimeError("HTTP {} from {}: {}{}".format(e.code, urllib.parse.urlparse(url).netloc, detail or e.reason, hint)) from None
         except (urllib.error.URLError, TimeoutError):
@@ -174,10 +176,14 @@ def ask_claude(api_key, artist, song, year, sources):
 
 
 def api_key():
-    try:
-        return open(API_KEY_FILE).read().strip()
-    except OSError:
-        return ""
+    for f in (LOCAL_KEY_FILE, API_KEY_FILE):
+        try:
+            k = open(f).read().strip()
+            if k:
+                return k
+        except OSError:
+            pass
+    return ""
 
 
 def facts_for(artist, song, year, log=print):
@@ -230,7 +236,7 @@ def info_from(video_path):
 
 def backfill(library, limit=None):
     if not api_key():
-        sys.exit("Put your Anthropic API key in {} first (one line).".format(API_KEY_FILE))
+        sys.exit("Put your Anthropic API key in anthropic-key.txt in this folder first (just the key, one line).")
     if not os.path.isdir(library):
         sys.exit("Can't reach {}. Open Finder > Network > WOPR > Media once, then try again.".format(library))
     videos = []
@@ -284,7 +290,7 @@ def main():
         except RuntimeError as e:
             sys.exit(str(e))
         if not api_key():
-            sys.exit("No API key yet: put it in {} (one line).".format(API_KEY_FILE))
+            sys.exit("No API key yet: put it in anthropic-key.txt in this folder (just the key, one line).")
         for b in bubbles:
             print("* " + b)
         if not bubbles:

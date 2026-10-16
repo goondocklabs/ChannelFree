@@ -10,3 +10,6 @@ pkg/
 
 __pycache__/
 *.pyc
+
+# secrets
+tools/anthropic-key.txt
