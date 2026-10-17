@@ -107,18 +107,31 @@ def tracks_from_text(text):
 
 
 def sidecar_tracks(video):
-    """Track list from a text file next to the video: (names, source, start times or None).
-    Start times are used when every line begins with one, e.g. "0:00 Artist - Song" (YouTube description style)."""
+    """Track list from a text file next to the video: (song names, source, timed segments or None).
+
+    With timestamps on every line ("0:00:30 - Artist "Song"", YouTube description style), each song runs from its
+    time to the next line's time, and lines that aren't songs ("(promo) ...") just mark stretches to skip."""
     stem = os.path.splitext(video)[0]
     for cand in (stem + ".txt", stem + " - tracks.txt", os.path.join(os.path.dirname(video), "tracks.txt")):
-        if os.path.isfile(cand):
-            with open(cand, encoding="utf-8", errors="replace") as f:
-                lines = [l for l in f.read().splitlines() if mvsplit.clean_track(l)]
-            names = [mvsplit.clean_track(l) for l in lines]
+        if not os.path.isfile(cand):
+            continue
+        with open(cand, encoding="utf-8", errors="replace") as f:
+            lines = [l for l in f.read().splitlines() if l.strip()]
+        source = "the text file " + os.path.basename(cand)
+        timed = [(mvsplit.stamp_seconds(l), None if mvsplit.is_filler(l) else mvsplit.clean_track(l)) for l in lines]
+        if timed and all(t is not None for t, _ in timed) and all(b[0] > a[0] for a, b in zip(timed, timed[1:])):
+            names, segs = [], []
+            for i, (t, name) in enumerate(timed):
+                if name:
+                    end = timed[i + 1][0] if i + 1 < len(timed) else None  # None = to the end of the video
+                    names.append(name)
+                    segs.append((t, end))
             if names:
-                starts = [mvsplit.stamp_seconds(l) for l in lines]
-                ok = all(s is not None for s in starts) and all(b > a for a, b in zip(starts, starts[1:]))
-                return names, "the text file " + os.path.basename(cand), (starts if ok else None)
+                return names, source, segs
+        names = [mvsplit.clean_track(l) for l in lines if not mvsplit.is_filler(l)]
+        names = [n for n in names if n]
+        if names:
+            return names, source, None
     return None, None, None
 
 
@@ -269,21 +282,22 @@ def process(path, ffmpeg, ffprobe, key):
     # Look for a track list first: if there is one, it's a compilation whatever its length.
     segments, names = chapter_tracks(ffprobe, path)
     source = "the file's chapters" if segments else None
-    starts = None
+    timed = None
     if not segments:
-        names, source, starts = sidecar_tracks(path)
+        names, source, timed = sidecar_tracks(path)
         if not names and not (single_name and total <= NAMED_SINGLE_MAX_SECONDS):
             names, source = archive_tracks(path)
         if names and len(names) < 2:
-            names, source, starts = None, None, None
-        if names and starts:
-            # Timestamps given: cut there, nudged to the nearest black/silent gap within a few seconds.
+            names, source, timed = None, None, None
+        if names and timed:
+            # Timestamps given: cut there, each boundary nudged to the nearest black/silent gap within a few seconds.
             gaps = mvsplit.black_gaps(ffmpeg, path)
+
             def snap(t):
                 near = [((g[0] + g[1]) / 2) for g in gaps if abs((g[0] + g[1]) / 2 - t) <= 4]
-                return min(near, key=lambda c: abs(c - t)) if near and t > 0 else t
-            cuts = [snap(t) for t in starts] + [total]
-            segments = [(cuts[i], cuts[i + 1]) for i in range(len(names))]
+                return min(near, key=lambda c: abs(c - t)) if near and 0 < t < total else t
+
+            segments = [(snap(a), snap(b) if b is not None else total) for a, b in timed]
             source += " (with timestamps)"
         elif names:
             ch = mvsplit.chapters(ffprobe, path)

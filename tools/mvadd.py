@@ -74,7 +74,7 @@ def safe(name):
     return re.sub(r"\s+", " ", name) or "Unknown"
 
 
-JUNK_RE = re.compile(r"\s*[\(\[][^\)\]]*\b(official|music video|video|remaster(ed)?|hd|hq|4k|lyrics?|explicit|clean|audio)\b[^\)\]]*[\)\]]",
+JUNK_RE = re.compile(r"\s*[\(\[][^\)\]]*\b(official|music video|video|remaster(ed)?|hd|hq|4k|lyrics?|explicit|clean|uncensored|censored|audio)\b[^\)\]]*[\)\]]",
                      re.IGNORECASE)
 
 

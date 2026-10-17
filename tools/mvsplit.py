@@ -59,9 +59,23 @@ def stamp_seconds(line):
     return float(secs)
 
 
+QUOTED_RE = re.compile(r'^(?P<artist>.+?)\s*(?:[-\u2010-\u2015:]\s*)?["\u201c\u201d](?P<title>[^"\u201c\u201d]+)["\u201c\u201d]\s*(?P<rest>.*)$')
+FILLER_RE = re.compile(r"\b(promo|ident|bumper|commercials?|adverts?|intro|outro|station id|interlude|break)\b", re.I)
+
+
+def is_filler(line):
+    """A track list line that isn't a song: '(promo) VH1 loading to MTV 00s', '(welcome to MTV 00s) promo'."""
+    text = STAMP_RE.sub("", line, count=1).strip()
+    return bool(FILLER_RE.search(text)) and (text.startswith("(") or " - " not in text and '"' not in text and "\u201c" not in text)
+
+
 def clean_track(line):
     line = STAMP_RE.sub("", line, count=1)
     line = TRAILING_STAMP_RE.sub("", line)
+    q = QUOTED_RE.match(line.strip())
+    if q:  # Artist "Song"  ->  Artist - Song
+        line = "{} - {}{}".format(q.group("artist").strip(), q.group("title").strip(),
+                                  (" " + q.group("rest").strip()) if q.group("rest").strip() else "")
     m = TRACK_RE.match(line)
     if not m:
         return None
