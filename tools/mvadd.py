@@ -74,10 +74,10 @@ def safe(name):
     return re.sub(r"\s+", " ", name) or "Unknown"
 
 
-JUNK_RE = re.compile(r"\s*[\(\[][^\)\]]*\b(official|music video|video|remaster(ed)?|hd|hq|4k|lyrics?|explicit|clean|uncensored|censored|audio|stereo|mono)\b[^\)\]]*[\)\]]",
+JUNK_RE = re.compile(r"\s*[\(\[][^\)\]]*\b(official|music video|video|remaster(ed)?|hd|hq|4k|lyrics?|explicit|clean|uncensored|censored|audio|stereo|mono|promo)\b[^\)\]]*[\)\]]",
                      re.IGNORECASE)
 
-TRAIL_JUNK_RE = re.compile(r"\s+[-–—]\s+(?:official|music|video|hd|hq|4k|remastered)(?:\s+(?:official|music|video|hd|hq|4k|remastered))*(?=\s+[-–—]|\s*$)", re.IGNORECASE)
+TRAIL_JUNK_RE = re.compile(r"\s+[-–—]\s+(?:official|music|video|promo|hd|hq|4k|remastered)(?:\s+(?:official|music|video|promo|hd|hq|4k|remastered))*(?=\s+[-–—]|\s*$)", re.IGNORECASE)
 TRAIL_YEAR_RE = re.compile(r"\s+[-–—]\s+((?:19|20)\d\d)\s*$")
 
 
@@ -145,9 +145,31 @@ class Library:
         return None
 
 
+QUOTED_NAME_RE = re.compile(r'^(?P<artist>[^"\u201c\u201d]+?)\s*(?:[-\u2013\u2014:]\s*)?["\u201c\u201d](?P<title>[^"\u201c\u201d]+)["\u201c\u201d](?P<rest>.*)$')
+BRACKET_ARTIST_RE = re.compile(r"^(?P<title>[^\[]+?)\s*\[(?P<artist>[^\]]+)\]\s*$")
+
+
 def parse(stem):
     # Downloaded names often carry "(Official Music Video)", "[HD]", "(Remastered 2009)" and so on.
-    stem = JUNK_RE.sub("", stem.replace("_", " ")).strip()
+    stem = stem.replace("_", " ").strip()
+    # Talking Heads "Burning Down the House" - Bohemia Afterdark  (anything after the quotes is the source)
+    q = QUOTED_NAME_RE.match(stem)
+    if q and " - " not in q.group("title"):
+        y = re.search(r"\((?:19|20)\d\d\)", q.group("rest"))
+        stem = "{} - {}{}".format(q.group("artist").strip(), q.group("title").strip(), " " + y.group(0) if y else "")
+    stem = JUNK_RE.sub("", stem).strip()
+    if not re.search(r"\s[-\u2013\u2014]\s", stem):
+        # The Power of Love [Huey Lewis and the News]  (artist in brackets at the end, no dash)
+        b = BRACKET_ARTIST_RE.match(stem)
+        if b:
+            stem = "{} - {}".format(b.group("artist").strip(), b.group("title").strip())
+        else:
+            # St. Elmo's Fire (Man in Motion): just a song; the artist is looked up later.
+            y = re.search(r"\s*\(((?:19|20)\d\d)\)\s*$", stem)
+            title = stem[:y.start()].strip() if y else stem
+            if not title:
+                return None
+            return {"artist": None, "title": title, "year": y.group(1) if y else None, "genre": None}
     # Dash style extras: "Sade - The Sweetest Taboo - Official - 1985" -> "Sade - The Sweetest Taboo (1985)".
     stem = TRAIL_JUNK_RE.sub("", stem).strip()
     if len(re.findall(r"\s[-–—]\s", stem)) >= 2:  # keep "Prince - 1999" as the song 1999
@@ -337,6 +359,34 @@ def jellyfin_scan(url, key):
         return r.status
 
 
+def who_sings(title):
+    """Artist for a video named only by its song ("St. Elmo's Fire (Man in Motion)"): ask Claude, then MusicBrainz."""
+    try:
+        import mvpopup
+        key = mvpopup.api_key()
+        if key:
+            body = json.dumps({"model": mvpopup.MODEL, "max_tokens": 50, "messages": [{"role": "user", "content":
+                "Which artist is best known for the music video of the song \"{}\"? Answer with only the artist's name "
+                "as it's usually written, or UNKNOWN if you aren't sure.".format(title)}]}).encode("utf-8")
+            res = mvpopup.http_json("https://api.anthropic.com/v1/messages", data=body, headers={
+                "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+            text = "".join(b.get("text", "") for b in res.get("content", []) if b.get("type") == "text").strip()
+            text = text.strip().strip('."').splitlines()[0].strip() if text else ""
+            if text and "unknown" not in text.lower() and len(text) <= 60:
+                return text
+    except Exception:
+        pass
+    try:
+        recs = [r for r in _mb_search('recording:"{}"'.format(_plain_title(title))) if int(r.get("score", 0)) >= 95]
+        if recs:
+            credits = recs[0].get("artist-credit") or []
+            name = "".join(c.get("name", "") + c.get("joinphrase", "") for c in credits).strip()
+            return name or None
+    except Exception:
+        pass
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="Add music videos to Jellyfin.")
     ap.add_argument("--inbox", default=INBOX)
@@ -368,6 +418,14 @@ def main():
     infos, guessed, disagree = {}, [], []
     for name in files:
         info = parse(os.path.splitext(name)[0])
+        if info and not info["artist"]:
+            who = None if args.no_lookup else who_sings(info["title"])
+            if who:
+                print("Looked up the artist for {}: {}".format(name, who))
+                fixed.append("{}: artist is {}".format(info["title"], who))
+                info["artist"] = who
+            else:
+                info = None
         infos[name] = info
         if info and not info["year"] and LOOKUP_MISSING_YEARS and not args.no_lookup:
             print("Looking up the year for " + name)
@@ -408,7 +466,7 @@ def main():
         print("[{}/{}] {}".format(i, len(files), name))
         info = infos[name]
         if not info:
-            reason = "name isn't 'Artist - Song (Year)'"
+            reason = "couldn't tell the artist; rename it 'Artist - Song'"
             print("    skipped: " + reason)
             attention.append((name, reason))
             if not args.dry_run:

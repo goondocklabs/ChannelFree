@@ -278,6 +278,16 @@ def process(path, ffmpeg, ffprobe, key):
 
     stem = os.path.splitext(name)[0]
     single_name = mvadd.parse(stem)
+    if single_name and not single_name["artist"]:
+        # Named only by its song ("St. Elmo's Fire (Man in Motion)"): find the artist if it's one video.
+        who = mvadd.who_sings(single_name["title"]) if total <= SINGLE_MAX_SECONDS else None
+        if who:
+            log("   artist looked up: " + who)
+            stem = "{} - {}".format(who, stem)
+            name = stem + os.path.splitext(name)[1]
+            single_name = mvadd.parse(stem)
+        else:
+            single_name = None
 
     # Look for a track list first: if there is one, it's a compilation whatever its length.
     segments, names = chapter_tracks(ffprobe, path)
@@ -445,7 +455,9 @@ def main():
                 missing = []
                 for n in expected:
                     info = mvadd.parse(n) or {}
-                    folder, _ = lib.artist(info.get("artist", ""))
+                    if info and not info.get("artist"):
+                        info["artist"] = mvadd.who_sings(info["title"]) or ""
+                    folder, _ = lib.artist(info.get("artist") or "")
                     if not lib.has_song(folder, info.get("title", "")):
                         missing.append(n)
                 if missing:
