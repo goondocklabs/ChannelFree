@@ -74,8 +74,11 @@ def safe(name):
     return re.sub(r"\s+", " ", name) or "Unknown"
 
 
-JUNK_RE = re.compile(r"\s*[\(\[][^\)\]]*\b(official|music video|video|remaster(ed)?|hd|hq|4k|lyrics?|explicit|clean|uncensored|censored|audio)\b[^\)\]]*[\)\]]",
+JUNK_RE = re.compile(r"\s*[\(\[][^\)\]]*\b(official|music video|video|remaster(ed)?|hd|hq|4k|lyrics?|explicit|clean|uncensored|censored|audio|stereo|mono)\b[^\)\]]*[\)\]]",
                      re.IGNORECASE)
+
+TRAIL_JUNK_RE = re.compile(r"\s+[-–—]\s+(?:official|music|video|hd|hq|4k|remastered)(?:\s+(?:official|music|video|hd|hq|4k|remastered))*(?=\s+[-–—]|\s*$)", re.IGNORECASE)
+TRAIL_YEAR_RE = re.compile(r"\s+[-–—]\s+((?:19|20)\d\d)\s*$")
 
 
 def match_key(s):
@@ -145,6 +148,10 @@ class Library:
 def parse(stem):
     # Downloaded names often carry "(Official Music Video)", "[HD]", "(Remastered 2009)" and so on.
     stem = JUNK_RE.sub("", stem.replace("_", " ")).strip()
+    # Dash style extras: "Sade - The Sweetest Taboo - Official - 1985" -> "Sade - The Sweetest Taboo (1985)".
+    stem = TRAIL_JUNK_RE.sub("", stem).strip()
+    if len(re.findall(r"\s[-–—]\s", stem)) >= 2:  # keep "Prince - 1999" as the song 1999
+        stem = TRAIL_YEAR_RE.sub(r" (\1)", stem).strip()
     m = NAME_RE.match(stem)
     if not m:
         return None
